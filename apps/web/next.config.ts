@@ -1,8 +1,8 @@
 import type { NextConfig } from "next";
 
 const config: NextConfig = {
-  transpilePackages: ["@mattertest/core", "@mattertest/db"],
-  serverExternalPackages: ["pg", "bullmq", "ioredis"],
+  transpilePackages: ["@mattertest/core", "@mattertest/db", "@mattertest/report"],
+  serverExternalPackages: ["pg", "bullmq", "ioredis", "playwright", "playwright-core"],
 };
 
 export default config;

@@ -16,12 +16,14 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
 
   const envs = await db.select().from(environments).where(eq(environments.projectId, id));
   const recentRuns = await db
-    .select({ id: runs.id, status: runs.status, title: tasks.title, createdAt: runs.createdAt, summary: runs.summary })
+    .select({ id: runs.id, status: runs.status, kind: tasks.kind, title: tasks.title, createdAt: runs.createdAt, summary: runs.summary })
     .from(runs)
     .innerJoin(tasks, eq(tasks.id, runs.taskId))
     .where(eq(tasks.projectId, id))
     .orderBy(desc(runs.createdAt))
     .limit(10);
+  // Reports are only accurate for the latest finished site check (findings remember their last run).
+  const latestDone = recentRuns.find((r) => r.status === "done" && r.kind === "site-check");
   const open = await db
     .select()
     .from(findings)
@@ -53,7 +55,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
         <h2>Recent runs</h2>
         <div className="table-wrap" style={{ marginTop: 12 }}>
           <table>
-            <thead><tr><th>Task</th><th>Status</th><th>Summary</th><th>Started</th></tr></thead>
+            <thead><tr><th>Task</th><th>Status</th><th>Summary</th><th>Started</th><th>Report</th></tr></thead>
             <tbody>
               {recentRuns.map((r) => (
                 <tr key={r.id}>
@@ -61,9 +63,10 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
                   <td><span className={`pill ${r.status}`}>{r.status}</span></td>
                   <td className="muted">{r.summary ? `${(r.summary as { pages?: number }).pages ?? "–"} pages · ${(r.summary as { findings?: number }).findings ?? "–"} findings` : "–"}</td>
                   <td className="muted">{r.createdAt.toLocaleString("en-AU")}</td>
+                  <td>{r.id === latestDone?.id ? <a href={`/runs/${r.id}/report`} download>Client PDF</a> : <span className="muted">–</span>}</td>
                 </tr>
               ))}
-              {recentRuns.length === 0 && <tr><td colSpan={4} className="muted">No runs yet.</td></tr>}
+              {recentRuns.length === 0 && <tr><td colSpan={5} className="muted">No runs yet.</td></tr>}
             </tbody>
           </table>
         </div>

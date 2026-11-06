@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { findingFingerprint, type FindingInput } from "@mattertest/core";
 import { checkResults, findings, pages, projects, runs, tasks, type Db } from "@mattertest/db";
-import type { SiteCheckResult } from "@mattertest/checks";
+import { rate, type SiteCheckResult } from "@mattertest/checks";
 
 /**
  * Store a site-check result. Findings are upserted by fingerprint so the same issue
@@ -29,6 +29,27 @@ export async function persistSiteCheck(db: Db, runId: string, result: SiteCheckR
       value: { pages: result.pages.length, templates: result.templates, platform: result.platform },
       pass: null,
     });
+
+    // One row per measured page and vital, so trends can be charted per URL.
+    const perfRows = result.perf.flatMap((m) =>
+      (["lcp", "cls", "tbt", "fcp", "ttfb"] as const)
+        .filter((k) => m[k] !== null)
+        .map((k) => ({ runId, category: "performance" as const, url: m.url, metric: k, value: { value: m[k], rating: rate(k, m[k]!), template: m.template, engine: m.engine }, pass: rate(k, m[k]!) === "good" })),
+    );
+    const weightRows = result.perf.map((m) => ({
+      runId,
+      category: "performance" as const,
+      url: m.url,
+      metric: "weight",
+      value: { transferBytes: m.transferBytes, jsBytes: m.jsBytes, imageBytes: m.imageBytes, requests: m.requests, load: m.load, template: m.template },
+      pass: null,
+    }));
+    const extraRows = result.perf.flatMap((m) => [
+      ...(m.score !== null ? [{ runId, category: "performance" as const, url: m.url, metric: "lighthouse-score", value: { value: m.score, insights: m.insights, template: m.template }, pass: m.score >= 90 }] : []),
+      ...(m.interaction ? [{ runId, category: "performance" as const, url: m.url, metric: "interaction", value: { value: m.interaction.latency, target: m.interaction.target, rating: rate("interaction", m.interaction.latency), template: m.template }, pass: rate("interaction", m.interaction.latency) === "good" }] : []),
+    ]);
+    const allPerf = [...perfRows, ...weightRows, ...extraRows];
+    if (allPerf.length) await tx.insert(checkResults).values(allPerf);
 
     for (const f of dedupe(result.findings)) {
       const fp = findingFingerprint(f);

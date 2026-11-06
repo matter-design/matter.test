@@ -3,8 +3,12 @@
 import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import type { CheckCategory } from "@mattertest/core";
 import { environments, runs, tasks } from "@mattertest/db";
 import { db, siteCheckQueue } from "@/lib/server";
+
+/** What "Start check" runs. Stored on the task so the report knows which areas were covered. */
+const CATEGORIES: CheckCategory[] = ["crawl", "links", "seo", "security", "accessibility", "performance", "platform"];
 
 const Input = z.object({ environmentId: z.string().uuid(), maxPages: z.coerce.number().int().min(1).max(5000).default(200) });
 
@@ -16,7 +20,7 @@ export async function startSiteCheck(formData: FormData) {
 
   const [task] = await db
     .insert(tasks)
-    .values({ projectId: env.projectId, kind: "site-check", trigger: "manual", title: `Site check: ${env.name}`, params: { maxPages } })
+    .values({ projectId: env.projectId, kind: "site-check", trigger: "manual", title: `Site check: ${env.name}`, params: { maxPages, categories: CATEGORIES, perfThrottle: "mobile" } })
     .returning();
   const [run] = await db.insert(runs).values({ taskId: task!.id, environmentId: env.id }).returning();
 
@@ -25,7 +29,7 @@ export async function startSiteCheck(formData: FormData) {
     runId: run!.id,
     environmentId: env.id,
     baseUrl: env.baseUrl,
-    categories: ["crawl", "links", "seo", "security", "accessibility"],
+    categories: CATEGORIES,
     maxPages,
   });
   revalidatePath(`/projects/${env.projectId}`);

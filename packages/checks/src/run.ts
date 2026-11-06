@@ -1,9 +1,12 @@
 import type { Browser } from "playwright";
 import type { CheckCategory, FindingInput, Platform } from "@mattertest/core";
 import { axeFindings } from "./a11y";
-import { crawl, type CrawledPage, normaliseUrl } from "./crawl";
+import { crawl, type CrawledPage, fetchText, normaliseUrl } from "./crawl";
 import { checkUrls, linkFindings } from "./links";
 import { detectPlatform } from "./platform";
+import { packFor, type PackPage } from "./packs";
+import { startLighthouse, type LighthouseRunner } from "./lighthouse";
+import { DEFAULT_BUDGETS, instrumentContext, measureInteraction, measurePage, perfFindings, type PerfBudgets, type PerfMetrics, type Throttle } from "./performance";
 import { securityHeaderFindings, cookieFindings, EXPOSED_FILE_PROBES } from "./security";
 import { extractSeoFacts, seoPageFindings, seoSiteFindings } from "./seo";
 
@@ -17,6 +20,15 @@ export interface SiteCheckOptions {
   respectRobots?: boolean;
   /** How many pages per template get the (slower) axe scan. */
   a11yPagesPerTemplate?: number;
+  /** How many pages per template get a performance measurement. */
+  perfPagesPerTemplate?: number;
+  /** Throttling for performance runs. Default "mobile" (same as PageSpeed Insights mobile). */
+  perfThrottle?: Throttle;
+  /** "lighthouse" (default) matches PageSpeed Insights; falls back to "browser" if Lighthouse cannot run. */
+  perfEngine?: "lighthouse" | "browser";
+  /** Time one harmless click per sampled page (lab stand-in for INP). Default true. */
+  perfInteraction?: boolean;
+  perfBudgets?: Partial<PerfBudgets>;
   onProgress?: (msg: string) => void;
 }
 
@@ -25,6 +37,8 @@ export interface SiteCheckResult {
   platformEvidence: string[];
   pages: Omit<CrawledPage, "html">[];
   templates: Record<string, number>;
+  /** Lab performance metrics, one entry per measured page. */
+  perf: (PerfMetrics & { template: string })[];
   findings: FindingInput[];
 }
 
@@ -66,10 +80,14 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
   const home = pages[0];
   const { platform, evidence } = home ? detectPlatform(home.html, home.headers) : { platform: "custom" as Platform, evidence: [] };
 
+  const pack = packFor(platform);
+  const templateOf = new Map<string, string>();
   const templates: Record<string, number> = {};
   const byTemplate = new Map<string, CrawledPage[]>();
   for (const p of pages) {
-    const t = guessTemplate(p.url, platform);
+    // Platform markup (e.g. Stencil page_type) beats URL shape when the pack can read it.
+    const t = (p.html && pack?.templateOf?.(p.html)) || guessTemplate(p.url, platform);
+    templateOf.set(p.url, t);
     templates[t] = (templates[t] ?? 0) + 1;
     byTemplate.set(t, [...(byTemplate.get(t) ?? []), p]);
   }
@@ -146,12 +164,73 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
     await ctx.close();
   }
 
-  // performance, visual, platform packs and reporting: next phase (see README roadmap).
+  const perf: SiteCheckResult["perf"] = [];
+  if (want.has("performance")) {
+    const perTemplate = o.perfPagesPerTemplate ?? 1;
+    const throttle = o.perfThrottle ?? "mobile";
+    const budgets = { ...DEFAULT_BUDGETS, ...o.perfBudgets };
+    const sample = [...byTemplate.values()].flatMap((ps) => ps.filter((p) => !p.error && (p.status ?? 0) < 400).slice(0, perTemplate));
+    let lh: LighthouseRunner | undefined;
+    if ((o.perfEngine ?? "lighthouse") === "lighthouse") {
+      try {
+        lh = await startLighthouse();
+      } catch (e) {
+        log(`Lighthouse unavailable, using in-browser measurement: ${(e as Error).message}`);
+      }
+    }
+    log(`performance on ${sample.length} pages (${lh ? "Lighthouse" : "browser"}, throttle: ${throttle})`);
+    try {
+      for (const p of sample) {
+        const template = templateOf.get(p.url) ?? "unknown";
+        // Fresh context per page: cold cache, like a first visit.
+        const ctx = await browser.newContext({ userAgent: ua, viewport: throttle === "mobile" ? { width: 412, height: 823 } : undefined });
+        try {
+          let m: PerfMetrics | undefined;
+          if (lh) {
+            try {
+              m = await lh.run(p.url, throttle);
+            } catch (e) {
+              log(`Lighthouse failed on ${p.url}, falling back: ${(e as Error).message}`);
+            }
+          }
+          if (!m) {
+            await instrumentContext(ctx);
+            m = await measurePage(ctx, p.url, { throttle });
+          }
+          if (o.perfInteraction ?? true) {
+            m.interaction = await measureInteraction(ctx, p.url, template, { throttle }).catch((e: Error) => {
+              log(`interaction failed on ${p.url}: ${e.message}`);
+              return null;
+            });
+          }
+          perf.push({ ...m, template });
+          findings.push(...perfFindings(m, budgets, throttle));
+        } catch (e) {
+          log(`performance failed on ${p.url}: ${(e as Error).message}`);
+        } finally {
+          await ctx.close();
+        }
+      }
+    } finally {
+      await lh?.close();
+    }
+  }
+
+  if (want.has("platform") && pack) {
+    log(`${platform} pack`);
+    const ctx = { baseUrl: o.baseUrl, robotsTxt: await fetchText(new URL("/robots.txt", o.baseUrl).toString(), ua) };
+    const packPages: PackPage[] = pages.map((p) => ({ url: p.url, status: p.status, headers: p.headers, html: p.html, template: templateOf.get(p.url) ?? "unknown" }));
+    for (const p of packPages) findings.push(...pack.pageFindings(p, ctx));
+    findings.push(...pack.siteFindings(packPages, ctx));
+  }
+
+  // visual, cross-browser and reporting: next phase (see README roadmap).
   return {
     platform,
     platformEvidence: evidence,
     pages: pages.map(({ html: _html, ...rest }) => rest),
     templates,
+    perf,
     findings,
   };
 }
