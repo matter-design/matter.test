@@ -56,11 +56,11 @@ export default async function ProjectDashboard({ params, searchParams }: { param
             <span className="pill">{PLATFORM_LABEL[project.platform]}</span>
             {project.status === "onboarding" && <span className="pill">Onboarding</span>}
           </div>
-          <span className="muted">
-            {client.name}
-            {project.jiraKey ? ` · Jira ${project.jiraKey}` : ""}
-            {project.slackChannel ? ` · Slack ${project.slackChannel}` : ""}
-          </span>
+          {(client.name !== project.name || project.jiraKey || project.slackChannel) && (
+            <span className="muted">
+              {[client.name !== project.name ? client.name : null, project.jiraKey ? `Jira ${project.jiraKey}` : null, project.slackChannel ? `Slack ${project.slackChannel}` : null].filter(Boolean).join(" · ")}
+            </span>
+          )}
         </div>
         <form action={startSiteCheck} className="row">
           <label htmlFor="db-env" className="sr-only">Environment</label>

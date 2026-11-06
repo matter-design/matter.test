@@ -40,7 +40,7 @@ export async function Shell({ active, project, children }: { active: NavKey; pro
           <div className="sidebar-project">
             <span className="eyebrow">Project</span>
             <span className="sidebar-project-name">{project.name}</span>
-            <span className="sidebar-project-meta">{project.client} · {PLATFORM_LABEL[project.platform]}</span>
+            <span className="sidebar-project-meta">{[project.client !== project.name ? project.client : null, PLATFORM_LABEL[project.platform]].filter(Boolean).join(" · ")}</span>
           </div>
         )}
         <div className="nav-items">

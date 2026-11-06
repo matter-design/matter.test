@@ -14,7 +14,6 @@ export default async function ProjectsPage() {
   const [cards, activity] = await Promise.all([listProjects(), recentActivity(8)]);
   const active = cards.filter((c) => c.status === "active").length;
   const running = activity.filter((a) => a.status === "running" || a.status === "queued").length;
-  const clients = [...new Set(cards.map((c) => c.client))].sort();
 
   return (
     <Shell active="projects">
@@ -27,7 +26,7 @@ export default async function ProjectsPage() {
           </p>
         </div>
         <div className="row">
-          <NewProjectButton clients={clients} />
+          <NewProjectButton />
         </div>
       </div>
 

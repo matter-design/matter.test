@@ -4,11 +4,12 @@ import { startTransition, useActionState, useEffect, useRef, useState } from "re
 import type { Platform } from "@mattertest/core";
 import { createProject, detectSitePlatform, type DetectResult, type NewProjectState } from "@/app/actions";
 import { PLATFORM_LABEL } from "@/lib/format";
+import { ENVIRONMENT_OPTIONS } from "@/lib/environments";
 
 const PACKS: Partial<Record<Platform, string>> = { bigcommerce: "BigCommerce", shopify: "Shopify", wordpress: "WordPress" };
 
 /** "New project" button plus the "Set up a project" dialog. */
-export function NewProjectButton({ clients }: { clients: string[] }) {
+export function NewProjectButton() {
   const ref = useRef<HTMLDialogElement>(null);
   const [open, setOpen] = useState(false);
   return (
@@ -23,7 +24,7 @@ export function NewProjectButton({ clients }: { clients: string[] }) {
         onClose={() => setOpen(false)}
         onClick={(e) => { if (e.target === e.currentTarget) ref.current?.close(); }}
       >
-        {open && <NewProjectForm clients={clients} onCancel={() => ref.current?.close()} />}
+        {open && <NewProjectForm onCancel={() => ref.current?.close()} />}
       </dialog>
     </>
   );
@@ -31,13 +32,13 @@ export function NewProjectButton({ clients }: { clients: string[] }) {
 
 type Detect = { state: "idle" } | { state: "checking" } | ({ state: "done" } & DetectResult);
 
-function NewProjectForm({ clients, onCancel }: { clients: string[]; onCancel: () => void }) {
+function NewProjectForm({ onCancel }: { onCancel: () => void }) {
   const [state, action, pending] = useActionState<NewProjectState, FormData>(createProject, {});
   const [url, setUrl] = useState("");
   const [detect, setDetect] = useState<Detect>({ state: "idle" });
   const [runFirst, setRunFirst] = useState(true);
 
-  // Detect the platform shortly after the production address stops changing.
+  // Detect the platform shortly after the website address stops changing.
   useEffect(() => {
     if (!/^https?:\/\/[^/\s]+\.[^/\s]+/i.test(url.trim())) {
       setDetect({ state: "idle" });
@@ -72,7 +73,7 @@ function NewProjectForm({ clients, onCancel }: { clients: string[]; onCancel: ()
       <div className="dialog-head">
         <div>
           <h2 id="np-title">Set up a project</h2>
-          <span className="muted">Add the client&apos;s site. Nothing is filed or posted anywhere until you approve it.</span>
+          <span className="muted">Add the client&apos;s website. Nothing is filed or posted anywhere until you approve it.</span>
         </div>
         <button type="button" className="icon-btn" aria-label="Close" onClick={onCancel}>
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" stroke="#14171F" strokeWidth="2" strokeLinecap="round" /></svg>
@@ -82,28 +83,25 @@ function NewProjectForm({ clients, onCancel }: { clients: string[]; onCancel: ()
       <div className="dialog-body">
         {state.error && <p className="error" role="alert">{state.error}</p>}
         <section>
-          <h3>Client and site</h3>
+          <h3>Website</h3>
           <div className="fields">
             <div className="field">
-              <label htmlFor="np-client">Client</label>
-              <input id="np-client" name="client" className="input" required list="np-clients" autoComplete="off" placeholder="e.g. Debras" {...fieldProps("client")} />
-              <datalist id="np-clients">{clients.map((c) => <option key={c} value={c} />)}</datalist>
-              {errorText("client")}
-            </div>
-            <div className="field">
               <label htmlFor="np-name">Project name</label>
-              <input id="np-name" name="name" className="input" required placeholder="e.g. Website 2026" {...fieldProps("name")} />
+              <input id="np-name" name="name" className="input" required placeholder="e.g. Debras website" {...fieldProps("name")} />
               {errorText("name")}
             </div>
             <div className="field">
-              <label htmlFor="np-prod">Production URL</label>
-              <input id="np-prod" name="productionUrl" type="url" className="input" required placeholder="https://www.example.com.au" value={url} onChange={(e) => setUrl(e.target.value)} {...fieldProps("productionUrl")} />
-              {errorText("productionUrl")}
+              <label htmlFor="np-url">Website URL</label>
+              <input id="np-url" name="url" type="url" className="input" required placeholder="https://www.example.com.au" value={url} onChange={(e) => setUrl(e.target.value)} {...fieldProps("url")} />
+              {errorText("url")}
             </div>
             <div className="field">
-              <label htmlFor="np-stage">Staging URL <span className="hint">(optional)</span></label>
-              <input id="np-stage" name="stagingUrl" type="url" className="input" placeholder="https://staging.example.com.au" {...fieldProps("stagingUrl")} />
-              {errorText("stagingUrl")}
+              <label htmlFor="np-env">Environment</label>
+              <select id="np-env" name="environment" className="input" defaultValue={ENVIRONMENT_OPTIONS[0].value} aria-describedby="np-env-hint" {...fieldProps("environment")}>
+                {ENVIRONMENT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <span id="np-env-hint" className="small muted">More environments can be added in Settings later.</span>
+              {errorText("environment")}
             </div>
           </div>
           <PlatformBanner detect={detect} />
@@ -136,7 +134,7 @@ function NewProjectForm({ clients, onCancel }: { clients: string[]; onCancel: ()
           </label>
           {runFirst && (
             <ol className="next-steps">
-              <li>Crawl production, up to 200 pages, and group them by page type</li>
+              <li>Crawl the site, up to 200 pages, and group them by page type</li>
               <li>Check links, SEO, accessibility (WCAG 2.2 AA), speed and security basics</li>
               <li>{platform && PACKS[platform] ? `Run the ${PACKS[platform]} check pack` : "Run the platform check pack if the platform has one"}</li>
               <li>Take the first screenshots in Chrome, Firefox and Safari as the visual baseline</li>
@@ -156,8 +154,8 @@ function NewProjectForm({ clients, onCancel }: { clients: string[]; onCancel: ()
 }
 
 function PlatformBanner({ detect }: { detect: Detect }) {
-  if (detect.state === "idle") return <div className="banner">The platform is detected from the production address.</div>;
-  if (detect.state === "checking") return <div className="banner" role="status">Checking the production site…</div>;
+  if (detect.state === "idle") return <div className="banner">The platform is detected from the website address.</div>;
+  if (detect.state === "checking") return <div className="banner" role="status">Checking the website…</div>;
   if (!detect.ok) return <div className="banner" role="status">{detect.reason}. The platform will be detected on the first check.</div>;
   const pack = PACKS[detect.platform];
   if (detect.platform === "custom") return <div className="banner" role="status">No known platform detected. The general checks still run.</div>;

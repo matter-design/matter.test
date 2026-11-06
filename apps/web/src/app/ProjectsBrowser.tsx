@@ -78,7 +78,7 @@ export function ProjectsBrowser({ cards }: { cards: CardData[] }) {
                 <div className="project-card-head">
                   <div>
                     <span className="project-card-name">{c.name}</span>
-                    <span className="project-card-domain">{c.client}{c.domain ? ` · ${c.domain}` : ""}</span>
+                    <span className="project-card-domain">{[c.client !== c.name ? c.client : null, c.domain].filter(Boolean).join(" · ")}</span>
                   </div>
                   <span className="pill">{PLATFORM_LABEL[c.platform]}</span>
                 </div>

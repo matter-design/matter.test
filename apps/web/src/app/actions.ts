@@ -8,6 +8,7 @@ import type { CheckCategory, Platform } from "@mattertest/core";
 import { detectPlatform } from "@mattertest/checks/platform";
 import { baselines, clients, environments, findings, projects, runs, tasks } from "@mattertest/db";
 import { requireUser } from "@/lib/auth";
+import { ENVIRONMENT_NAMES } from "@/lib/environments";
 import { db, siteCheckQueue } from "@/lib/server";
 
 /** What "Start check" runs. Stored on the task so the report knows which areas were covered. */
@@ -88,10 +89,9 @@ const httpUrl = (label: string) =>
     .refine((u) => /^https?:\/\//i.test(u), "Use an http(s) address");
 
 const NewProject = z.object({
-  client: z.string().trim().min(1, "Client name is required").max(120),
   name: z.string().trim().min(1, "Project name is required").max(120),
-  productionUrl: httpUrl("production address"),
-  stagingUrl: z.union([z.literal(""), httpUrl("staging address")]).default(""),
+  url: httpUrl("website address"),
+  environment: z.enum(ENVIRONMENT_NAMES, { message: "Choose an environment" }),
   jiraKey: z
     .string()
     .trim()
@@ -114,8 +114,9 @@ const slugify = (s: string) =>
   s.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "client";
 
 /**
- * Set up a project from the dialog: client (reused when the name matches an existing one), project,
- * production and optional staging environments, then optionally queue the first site check on production.
+ * Set up a project from the dialog: one website URL in one environment, then optionally queue its first site check.
+ * The dialog no longer asks for a client; the project's client record is named after the project
+ * (reused if one with that name exists) until clients get their own screen.
  */
 export async function createProject(_prev: NewProjectState, formData: FormData): Promise<NewProjectState> {
   const user = await requireUser();
@@ -130,13 +131,13 @@ export async function createProject(_prev: NewProjectState, formData: FormData):
   }
   const input = parsed.data;
   const platform = PLATFORMS_DETECTABLE.has(input.platform as Platform) ? (input.platform as Platform) : "custom";
-  const slug = slugify(input.client);
+  const slug = slugify(input.name);
 
-  const { projectId, production } = await db.transaction(async (tx) => {
+  const { projectId, env } = await db.transaction(async (tx) => {
     const [existing] = await tx.select().from(clients).where(eq(clients.slug, slug));
-    const client = existing ?? (await tx.insert(clients).values({ name: input.client, slug }).returning())[0]!;
+    const client = existing ?? (await tx.insert(clients).values({ name: input.name, slug }).returning())[0]!;
     const [dupe] = await tx.select({ id: projects.id }).from(projects).where(and(eq(projects.clientId, client.id), eq(projects.name, input.name)));
-    if (dupe) return { projectId: dupe.id, production: null, duplicate: true };
+    if (dupe) return { projectId: dupe.id, env: null };
     const [project] = await tx
       .insert(projects)
       .values({
@@ -148,17 +149,16 @@ export async function createProject(_prev: NewProjectState, formData: FormData):
         slackChannel: input.slackChannel ? (input.slackChannel.startsWith("#") ? input.slackChannel : `#${input.slackChannel}`) : null,
       })
       .returning();
-    const [prod] = await tx.insert(environments).values({ projectId: project!.id, name: "production", baseUrl: new URL(input.productionUrl).toString() }).returning();
-    if (input.stagingUrl) await tx.insert(environments).values({ projectId: project!.id, name: "staging", baseUrl: new URL(input.stagingUrl).toString() });
-    return { projectId: project!.id, production: prod!, duplicate: false };
+    const [created] = await tx.insert(environments).values({ projectId: project!.id, name: input.environment, baseUrl: new URL(input.url).toString() }).returning();
+    return { projectId: project!.id, env: created! };
   });
 
-  if (!production) return { error: `${input.client} already has a project called "${input.name}".`, fields: { name: "Choose a different name" } };
+  if (!env) return { error: `There is already a project called "${input.name}".`, fields: { name: "Choose a different name" } };
 
   let queued = "";
   if (input.runFirstCheck) {
     try {
-      await queueSiteCheck(production, DEFAULT_MAX_PAGES, user.email, "First site check: production");
+      await queueSiteCheck(env, DEFAULT_MAX_PAGES, user.email, `First site check: ${env.name}`);
     } catch {
       queued = "?queue=failed";
     }
@@ -172,7 +172,7 @@ const PLATFORMS_DETECTABLE = new Set<Platform>(["bigcommerce", "shopify", "wordp
 export type DetectResult = { ok: true; platform: Platform; evidence: string[] } | { ok: false; reason: string };
 
 /**
- * One GET of the production home page to name the platform while the dialog is open.
+ * One GET of the website's home page to name the platform while the dialog is open.
  * No crawling, no retries; a failure just means the platform is found on the first check.
  */
 export async function detectSitePlatform(url: string): Promise<DetectResult> {
