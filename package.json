@@ -16,7 +16,8 @@
     "db:seed": "pnpm --filter @mattertest/db seed",
     "web": "pnpm --filter @mattertest/web dev",
     "worker": "pnpm --filter @mattertest/worker dev",
-    "report": "pnpm --filter @mattertest/worker report"
+    "report": "pnpm --filter @mattertest/worker report",
+    "import-run": "pnpm --filter @mattertest/worker import-run"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

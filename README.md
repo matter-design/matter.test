@@ -109,6 +109,12 @@ Writes a JSON result to `./artefacts/`. Add `--pdf --client "Northwind Outdoor" 
 pnpm report ./artefacts/shop.example.com-2026-11-06T03-00-00-000Z.json --client "Northwind Outdoor" --project "Store launch"
 ```
 
+To show a terminal check in the web app without checking the site again, load it into the database. The client, project and environment are created if they don't exist yet:
+
+```bash
+pnpm import-run ./artefacts/shop.example.com-2026-11-06T03-00-00-000Z.json --client "Northwind Outdoor" --project "Store launch"
+```
+
 ## Layout
 
 ```
