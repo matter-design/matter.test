@@ -227,6 +227,18 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
     const packPages: PackPage[] = pages.map((p) => ({ url: p.url, status: p.status, headers: p.headers, html: p.html, template: templateOf.get(p.url) ?? "unknown" }));
     for (const p of packPages) findings.push(...pack.pageFindings(p, ctx));
     findings.push(...pack.siteFindings(packPages, ctx));
+    if (pack.probe) {
+      const get = async (path: string) => {
+        try {
+          const res = await fetch(new URL(path, o.baseUrl), { headers: { "user-agent": ua }, redirect: "manual", signal: AbortSignal.timeout(8_000) });
+          const text = await res.text();
+          return { status: res.status, body: text.slice(0, 100_000), headers: Object.fromEntries(res.headers) };
+        } catch {
+          return null;
+        }
+      };
+      findings.push(...(await pack.probe(ctx, get)));
+    }
   }
 
   let visual: SiteCheckResult["visual"] = null;
