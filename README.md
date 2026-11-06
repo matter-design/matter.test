@@ -20,7 +20,8 @@ Architecture and roadmap: see the *Agentic Test Management Tool — Architecture
 | Performance: Lighthouse per template (PSI mobile/desktop profiles), score, LCP/CLS/TBT/FCP/TTFB, insights, weight budgets, scripted lab interaction (INP stand-in), in-browser fallback | Done |
 | BigCommerce pack: Stencil page-type templates, `[Sample]` catalogue, store-domain canonicals/links, maintenance mode, unbuyable or $0.00 PDPs, missing Product schema, indexable facet/cart URLs, robots.txt | Done |
 | Findings deduped across runs by fingerprint; reopened if they come back | Done |
-| Web app: project list, add project, project page, start a check, runs, open findings | Done (basic) |
+| Web app (UI pass 1, from the prototype): projects with search/filters and health, "Set up a project" dialog (staging URL, Jira/Slack, live platform detection, optional first check), project dashboard (health by category, fix-first list, runs), site check results (category filter, speed by page type, browser × device grid), finding detail with triage | Done |
+| Health score: 0–100 per category and overall from the latest check's open findings, each issue type costing points by severity (more if widespread), performance from the median Lighthouse score; see `apps/web/src/lib/health.ts` | Done |
 | Sign-in: Google, limited to the company Workspace domain; every page, action, report and screenshot protected; who started checks and approved baselines is recorded | Done |
 | Client PDF report: summary, "fix these first", speed per page type, accessibility by WCAG criterion, platform/SEO/links/security, appendix; plain-English why/fix per issue; client branding | Done |
 | Visual + cross-browser: Chromium, Firefox and WebKit at phone/tablet/desktop; screenshot diffs against approved baselines; sideways scroll, browser-specific JS errors and images, missing viewport tag; approve changes in the web app; grid and before/after in the report | Done |

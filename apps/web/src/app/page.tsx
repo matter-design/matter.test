@@ -1,73 +1,60 @@
 import Link from "next/link";
-import { eq, sql } from "drizzle-orm";
-import { clients, findings, projects } from "@mattertest/db";
-import { db } from "@/lib/server";
-import { createProject } from "@/app/actions";
+import { Shell } from "@/components/Shell";
+import { RunStatus } from "@/components/badges";
+import { listProjects, recentActivity } from "@/lib/queries";
+import { TRIGGER_LABEL, plural, timeAgo } from "@/lib/format";
+import { ProjectsBrowser } from "./ProjectsBrowser";
+import { NewProjectButton } from "./NewProjectDialog";
 
 export const dynamic = "force-dynamic";
 
+const KIND_LABEL: Record<string, string> = { "site-check": "Site check" };
+
 export default async function ProjectsPage() {
-  const rows = await db
-    .select({
-      id: projects.id,
-      name: projects.name,
-      client: clients.name,
-      platform: projects.platform,
-      status: projects.status,
-      openFindings: sql<number>`(select count(*)::int from ${findings} f where f.project_id = ${projects.id} and f.state in ('new','open'))`,
-    })
-    .from(projects)
-    .innerJoin(clients, eq(clients.id, projects.clientId))
-    .orderBy(projects.name);
+  const [cards, activity] = await Promise.all([listProjects(), recentActivity(8)]);
+  const active = cards.filter((c) => c.status === "active").length;
+  const running = activity.filter((a) => a.status === "running" || a.status === "queued").length;
 
   return (
-    <>
-      <div>
-        <h1>Projects</h1>
-        <p className="muted">{rows.length} projects</p>
-      </div>
-      <div className="grid">
-        {rows.map((p) => (
-          <Link key={p.id} href={`/projects/${p.id}`} className="card" style={{ color: "inherit", textDecoration: "none" }}>
-            <div className="row" style={{ justifyContent: "space-between" }}>
-              <strong>{p.name}</strong>
-              <span className="pill">{p.platform}</span>
-            </div>
-            <p className="muted">{p.client} · {p.status}</p>
-            <p style={{ margin: 0 }}><strong>{p.openFindings}</strong> open findings</p>
-          </Link>
-        ))}
-        {rows.length === 0 && <p className="muted">No projects yet. Add one below.</p>}
+    <Shell active="projects">
+      <div className="page-head">
+        <div>
+          <h1>Projects</h1>
+          <p className="muted" style={{ margin: 0 }}>
+            {plural(active, "active client project")}
+            {running ? ` · ${plural(running, "check")} running or queued` : ""}
+          </p>
+        </div>
+        <div className="row">
+          <NewProjectButton />
+        </div>
       </div>
 
-      <section className="card">
-        <h2>New project</h2>
-        <p className="muted">The platform (Shopify, BigCommerce, WordPress…) is detected on the first check.</p>
-        <form action={createProject} className="form-grid">
-          <label>
-            <span>Client</span>
-            <input name="client" required className="input" placeholder="Debras" list="clients" />
-            <datalist id="clients">{[...new Set(rows.map((r) => r.client))].map((c) => <option key={c} value={c} />)}</datalist>
-          </label>
-          <label>
-            <span>Project</span>
-            <input name="name" required className="input" placeholder="Debras website" />
-          </label>
-          <label>
-            <span>Site address</span>
-            <input name="baseUrl" type="url" required className="input" placeholder="https://www.debras.com.au/" />
-          </label>
-          <label>
-            <span>Environment</span>
-            <select name="environment" className="input" defaultValue="production">
-              <option value="production">production</option>
-              <option value="staging">staging</option>
-              <option value="uat">uat</option>
-            </select>
-          </label>
-          <div><button type="submit" className="btn">Add project</button></div>
-        </form>
+      <ProjectsBrowser cards={cards.map((c) => ({ ...c, lastCheck: c.lastCheck ? { status: c.lastCheck.status, at: c.lastCheck.at.toISOString() } : null }))} />
+
+      <section className="section">
+        <h2>Recent activity</h2>
+        <div className="table-wrap">
+          <table style={{ minWidth: 720 }}>
+            <thead>
+              <tr><th>Task</th><th>Project</th><th>Kind</th><th>Trigger</th><th>Status</th><th>When</th></tr>
+            </thead>
+            <tbody>
+              {activity.map((a) => (
+                <tr key={a.id}>
+                  <td><Link className="cell-link" href={a.status === "done" ? `/runs/${a.id}` : `/projects/${a.projectId}`}>{a.title}</Link></td>
+                  <td>{a.projectName}</td>
+                  <td className="muted">{KIND_LABEL[a.kind] ?? a.kind}</td>
+                  <td className="muted">{TRIGGER_LABEL[a.trigger] ?? a.trigger}</td>
+                  <td><RunStatus status={a.status} /></td>
+                  <td className="muted">{timeAgo(a.finishedAt ?? a.createdAt)}</td>
+                </tr>
+              ))}
+              {activity.length === 0 && <tr><td colSpan={6} className="muted">Nothing has run yet. Set up a project to start its first check.</td></tr>}
+            </tbody>
+          </table>
+        </div>
       </section>
-    </>
+    </Shell>
   );
 }

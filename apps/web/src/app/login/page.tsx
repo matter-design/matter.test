@@ -16,6 +16,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   const c = authConfig();
   const missing = authProblems(c);
   return (
+    <main className="login-page">
     <section className="card login">
       <h1>Sign in</h1>
       <p className="muted">MatterTest is for the {c.domain} team. Sign in with your company Google account.</p>
@@ -26,5 +27,6 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         <a className="btn" href={`/auth/google?next=${encodeURIComponent(safeNext(next))}`}>Sign in with Google</a>
       )}
     </section>
+    </main>
   );
 }
