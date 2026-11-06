@@ -1,124 +1,172 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { desc, eq, inArray, sql } from "drizzle-orm";
-import { environments, findings, projects, runs, tasks } from "@mattertest/db";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { environments, findings } from "@mattertest/db";
 import { db } from "@/lib/server";
-import { acceptVisualChange, startSiteCheck } from "@/app/actions";
+import { startSiteCheck } from "@/app/actions";
+import { Shell } from "@/components/Shell";
+import { RunStatus, SeverityPill } from "@/components/badges";
+import { VisualChange } from "@/components/VisualChange";
+import { healthForRun, latestSiteCheck, projectWithClient, recentActivity } from "@/lib/queries";
+import { CATEGORY_LABEL, PLATFORM_LABEL, TRIGGER_LABEL, dateTime, duration, plural, timeAgo } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
 const SEVERITY_ORDER = sql`array_position(array['critical','high','medium','low','info']::severity[], ${findings.severity})`;
 
-export default async function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ProjectDashboard({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ queue?: string }> }) {
   const { id } = await params;
-  const [project] = await db.select().from(projects).where(eq(projects.id, id));
-  if (!project) notFound();
+  const { queue } = await searchParams;
+  if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
+  const row = await projectWithClient(id);
+  if (!row) notFound();
+  const { project, client } = row;
 
-  const envs = await db.select().from(environments).where(eq(environments.projectId, id));
-  const recentRuns = await db
-    .select({ id: runs.id, status: runs.status, kind: tasks.kind, title: tasks.title, createdAt: runs.createdAt, summary: runs.summary })
-    .from(runs)
-    .innerJoin(tasks, eq(tasks.id, runs.taskId))
-    .where(eq(tasks.projectId, id))
-    .orderBy(desc(runs.createdAt))
-    .limit(10);
-  // Reports are only accurate for the latest finished site check (findings remember their last run).
-  const latestDone = recentRuns.find((r) => r.status === "done" && r.kind === "site-check");
-  const open = await db
-    .select()
-    .from(findings)
-    .where(sql`${findings.projectId} = ${id} and ${inArray(findings.state, ["new", "open"])}`)
-    .orderBy(SEVERITY_ORDER, findings.category)
-    .limit(200);
+  const [envs, latest, runsList] = await Promise.all([
+    db.select().from(environments).where(eq(environments.projectId, id)).orderBy(sql`${environments.name} = 'production' desc`, environments.createdAt),
+    latestSiteCheck(id),
+    recentActivity(8, id),
+  ]);
+  const health = latest ? await healthForRun(id, latest) : null;
+  const summary = (latest?.summary ?? {}) as { pages?: number; templates?: Record<string, number> };
+
+  const open = latest
+    ? await db
+        .select()
+        .from(findings)
+        .where(and(eq(findings.projectId, id), eq(findings.lastRunId, latest.id), inArray(findings.state, ["new", "open"]), sql`${findings.severity} <> 'info'`))
+        .orderBy(SEVERITY_ORDER, desc(findings.occurrences))
+    : [];
+  const bySev = (s: string) => open.filter((f) => f.severity === s).length;
+  // One row per issue type, worst first: what to fix first.
+  const seen = new Set<string>();
+  const fixFirst = open.filter((f) => !seen.has(f.rule) && seen.add(f.rule)).slice(0, 6);
+  const ruleCount = (rule: string) => open.filter((f) => f.rule === rule).length;
+  const visualChanges = open.filter((f) => f.rule === "visual.changed");
+  const inFlight = runsList.find((r) => r.status === "running" || r.status === "queued");
+  const checksHref = latest ? `/runs/${latest.id}` : null;
 
   return (
-    <>
-      <div>
-        <p className="muted"><Link href="/">Projects</Link> / {project.name}</p>
-        <div className="row"><h1>{project.name}</h1><span className="pill">{project.platform}</span></div>
+    <Shell active="dashboard" project={{ id, name: project.name, client: client.name, platform: project.platform, latestRunId: latest?.id }}>
+      <div className="page-head">
+        <div>
+          <span className="crumbs"><Link href="/">Projects</Link> / {project.name}</span>
+          <div className="title-row">
+            <h1>{project.name}</h1>
+            <span className="pill">{PLATFORM_LABEL[project.platform]}</span>
+            {project.status === "onboarding" && <span className="pill">Onboarding</span>}
+          </div>
+          <span className="muted">
+            {client.name}
+            {project.jiraKey ? ` · Jira ${project.jiraKey}` : ""}
+            {project.slackChannel ? ` · Slack ${project.slackChannel}` : ""}
+          </span>
+        </div>
+        <form action={startSiteCheck} className="row">
+          <label htmlFor="db-env" className="sr-only">Environment</label>
+          <select id="db-env" name="environmentId" className="input">
+            {envs.map((e) => <option key={e.id} value={e.id}>{e.name[0]!.toUpperCase() + e.name.slice(1)} · {new URL(e.baseUrl).host}</option>)}
+          </select>
+          <input type="hidden" name="maxPages" value="200" />
+          <button type="submit" className="btn" disabled={!envs.length || !!inFlight}>{inFlight ? "Check in progress" : "Run site check"}</button>
+        </form>
       </div>
 
-      <section className="card">
-        <h2>Run a site check</h2>
-        <form action={startSiteCheck} className="row" style={{ marginTop: 12 }}>
-          <label className="muted" htmlFor="env">Environment</label>
-          <select id="env" name="environmentId" className="input">
-            {envs.map((e) => <option key={e.id} value={e.id}>{e.name} · {e.baseUrl}</option>)}
-          </select>
-          <label className="muted" htmlFor="max">Max pages</label>
-          <input id="max" name="maxPages" type="number" defaultValue={200} min={1} max={5000} className="input" style={{ width: 110 }} />
-          <button type="submit" className="btn" disabled={!envs.length}>Start check</button>
-        </form>
-      </section>
-
-      <section>
-        <h2>Recent runs</h2>
-        <div className="table-wrap" style={{ marginTop: 12 }}>
-          <table>
-            <thead><tr><th>Task</th><th>Status</th><th>Summary</th><th>Started</th><th>Report</th></tr></thead>
-            <tbody>
-              {recentRuns.map((r) => (
-                <tr key={r.id}>
-                  <td>{r.title}</td>
-                  <td><span className={`pill ${r.status}`}>{r.status}</span></td>
-                  <td className="muted">{r.summary ? `${(r.summary as { pages?: number }).pages ?? "–"} pages · ${(r.summary as { findings?: number }).findings ?? "–"} findings` : "–"}</td>
-                  <td className="muted">{r.createdAt.toLocaleString("en-AU")}</td>
-                  <td>{r.id === latestDone?.id ? <a href={`/runs/${r.id}/report`} download>Client PDF</a> : <span className="muted">–</span>}</td>
-                </tr>
-              ))}
-              {recentRuns.length === 0 && <tr><td colSpan={5} className="muted">No runs yet.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section>
-        <h2>Open findings ({open.length})</h2>
-        <div className="table-wrap" style={{ marginTop: 12 }}>
-          <table>
-            <thead><tr><th>Severity</th><th>Finding</th><th>Category</th><th>Seen</th></tr></thead>
-            <tbody>
-              {open.map((f) => (
-                <tr key={f.id}>
-                  <td><span className={`pill ${f.severity}`}>{f.severity}</span></td>
-                  <td>
-                    <strong>{f.title}</strong>
-                    <div className="muted">{f.url}{f.wcag ? ` · WCAG ${f.wcag}` : ""}</div>
-                    {f.rule === "visual.changed" && <VisualChange findingId={f.id} evidence={f.evidence} />}
-                  </td>
-                  <td className="muted">{f.category}</td>
-                  <td className="muted">{f.occurrences}×</td>
-                </tr>
-              ))}
-              {open.length === 0 && <tr><td colSpan={4} className="muted">Nothing open.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </>
-  );
-}
-
-/** Before / now / diff thumbnails for a visual change, with an approve button. */
-function VisualChange({ findingId, evidence }: { findingId: string; evidence: Record<string, unknown> | null }) {
-  const ev = (evidence ?? {}) as { baselineUri?: string; currentUri?: string; diffUri?: string };
-  const img = (uri: string | undefined, label: string) =>
-    uri ? (
-      <a href={`/artefacts/${uri}`} target="_blank" rel="noreferrer" className="shot">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={`/artefacts/${uri}`} alt={label} loading="lazy" />
-        <span>{label}</span>
-      </a>
-    ) : null;
-  return (
-    <div className="visual-change">
-      <div className="shots">{img(ev.baselineUri, "Approved")}{img(ev.currentUri, "Now")}{img(ev.diffUri, "Diff")}</div>
-      {ev.currentUri && (
-        <form action={acceptVisualChange}>
-          <input type="hidden" name="findingId" value={findingId} />
-          <button type="submit" className="btn btn-secondary">Approve change</button>
-        </form>
+      {queue === "failed" && (
+        <p className="error" role="alert">The project was created, but the first check could not be queued because the job queue is not reachable. Start the worker and Redis, then press Run site check.</p>
       )}
-    </div>
+
+      {!latest ? (
+        <section className="empty">
+          {inFlight ? "The first site check is in progress. Results appear here when it finishes." : "No site check has finished yet. Press Run site check to start one."}
+        </section>
+      ) : (
+        <>
+          <div className="kpis">
+            <Link className="kpi" href={checksHref!}>
+              <span className="kpi-label">Health score</span>
+              <span className="kpi-value">{health?.overall ?? "—"}</span>
+              <span className="kpi-note">Out of 100, from the latest check</span>
+            </Link>
+            <Link className="kpi" href={checksHref!}>
+              <span className="kpi-label">Open findings</span>
+              <span className="kpi-value">{open.length}</span>
+              <span className="kpi-note">{bySev("critical")} critical · {bySev("high")} high</span>
+            </Link>
+            <Link className="kpi" href={checksHref!}>
+              <span className="kpi-label">Pages checked</span>
+              <span className="kpi-value">{summary.pages ?? "—"}</span>
+              <span className="kpi-note">{plural(Object.keys(summary.templates ?? {}).length, "page type")}</span>
+            </Link>
+            <Link className="kpi" href={checksHref!}>
+              <span className="kpi-label">Last check</span>
+              <span className="kpi-value" style={{ fontSize: 22 }}>{timeAgo(latest.finishedAt ?? latest.createdAt)}</span>
+              <span className="kpi-note">{dateTime(latest.finishedAt ?? latest.createdAt)}{duration(latest.startedAt, latest.finishedAt) ? ` · took ${duration(latest.startedAt, latest.finishedAt)}` : ""}</span>
+            </Link>
+          </div>
+
+          <section className="section">
+            <div className="section-head">
+              <h2>Health by category</h2>
+              <span className="muted small">Latest site check · {dateTime(latest.finishedAt ?? latest.createdAt)}</span>
+            </div>
+            <div className="cats">
+              {health?.categories.map((c) => (
+                <Link key={c.category} className="cat" href={`/runs/${latest.id}?cat=${c.category}`}>
+                  <div className="cat-head"><span className="cat-name">{CATEGORY_LABEL[c.category]}</span><span className="cat-score">{c.score}</span></div>
+                  <div className="bar" aria-hidden="true"><span style={{ width: `${c.score}%` }} /></div>
+                  <span className="muted small">
+                    {c.source === "lighthouse" ? `Median Lighthouse score · ${plural(c.findings, "finding")}` : c.findings ? `${plural(c.issues, "issue type")} · ${plural(c.findings, "finding")}` : "Nothing open"}
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </section>
+
+          <div className="split">
+            <section className="panel">
+              <div className="section-head"><h2 style={{ fontSize: 16 }}>Fix these first</h2><Link className="small" href={checksHref!} style={{ fontWeight: 600, textDecoration: "none" }}>All findings</Link></div>
+              {fixFirst.map((f) => (
+                <Link key={f.id} className="list-row" href={`/findings/${f.id}`}>
+                  <span>
+                    <span className="list-title">{f.title}</span>
+                    <span className="list-sub">{CATEGORY_LABEL[f.category]}{ruleCount(f.rule) > 1 ? ` · ${ruleCount(f.rule)} pages` : ""}</span>
+                  </span>
+                  <SeverityPill severity={f.severity} />
+                </Link>
+              ))}
+              {!fixFirst.length && <p className="muted" style={{ margin: 0 }}>Nothing open. </p>}
+            </section>
+            <section className="panel">
+              <div className="section-head"><h2 style={{ fontSize: 16 }}>Recent runs</h2></div>
+              {runsList.map((r) => (
+                <div key={r.id} className="list-row">
+                  <span>
+                    {r.status === "done" ? <Link className="list-title" href={`/runs/${r.id}`} style={{ textDecoration: "none" }}>{r.title}</Link> : <span className="list-title">{r.title}</span>}
+                    <span className="list-sub">{TRIGGER_LABEL[r.trigger] ?? r.trigger} · {timeAgo(r.finishedAt ?? r.createdAt)}{r.summary && (r.summary as { findings?: number }).findings !== undefined ? ` · ${plural((r.summary as { findings: number }).findings, "finding")}` : ""}</span>
+                  </span>
+                  <span className="row" style={{ gap: 8, flexWrap: "nowrap" }}>
+                    {r.id === latest.id && <a className="small" href={`/runs/${r.id}/report`} download style={{ fontWeight: 600 }}>PDF</a>}
+                    <RunStatus status={r.status} />
+                  </span>
+                </div>
+              ))}
+            </section>
+          </div>
+
+          {visualChanges.length > 0 && (
+            <section className="section">
+              <h2>Screenshot changes to review</h2>
+              {visualChanges.map((f) => (
+                <div key={f.id} className="panel">
+                  <Link className="cell-link" href={`/findings/${f.id}`}>{f.title}</Link>
+                  <VisualChange findingId={f.id} evidence={f.evidence} />
+                </div>
+              ))}
+            </section>
+          )}
+        </>
+      )}
+    </Shell>
   );
 }

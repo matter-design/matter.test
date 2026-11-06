@@ -26,6 +26,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@mattertest/checks':
+        specifier: workspace:*
+        version: link:../../packages/checks
       '@mattertest/core':
         specifier: workspace:*
         version: link:../../packages/core

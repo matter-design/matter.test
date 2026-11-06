@@ -119,6 +119,9 @@ export async function persistSiteCheck(db: Db, runId: string, result: SiteCheckR
       })
       .where(eq(runs.id, runId));
 
+    // A project leaves onboarding once its first check has finished.
+    await tx.update(projects).set({ status: "active" }).where(and(eq(projects.id, task.projectId), eq(projects.status, "onboarding")));
+
     if (result.platform !== "custom") {
       await tx.update(projects).set({ platform: result.platform }).where(and(eq(projects.id, task.projectId), eq(projects.platform, "custom")));
     }
