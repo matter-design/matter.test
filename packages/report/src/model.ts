@@ -9,6 +9,8 @@ export interface ReportPerf {
   engine?: "lighthouse" | "browser";
   score: number | null;
   lcp: number | null;
+  /** LCP observed without throttling during the Lighthouse load. */
+  observedLcp?: number | null;
   cls: number | null;
   tbt: number | null;
   fcp?: number | null;

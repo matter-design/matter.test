@@ -1,10 +1,12 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { newContext } from "./browser-shim";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import pixelmatch from "pixelmatch";
 import { PNG } from "pngjs";
 import { chromium, firefox, webkit, type Browser, type BrowserContextOptions, type Page } from "playwright";
 import { artefactPath, type FindingInput } from "@mattertest/core";
+import { isBotChallenge } from "./crawl";
 
 /**
  * Visual regression and cross-browser checks.
@@ -81,7 +83,8 @@ export function fileBaselineStore(host: string, runStamp: string, opts: { update
 
 export interface VisualCapture extends BaselineKey {
   template: string;
-  status: "baseline-created" | "match" | "changed" | "error";
+  /** "blocked": the site served a bot-protection challenge; nothing was compared or stored. */
+  status: "baseline-created" | "match" | "changed" | "blocked" | "error";
   /** Share of compared pixels that differ, 0-1. */
   diffRatio?: number;
   /** Bounding box of the changed pixels, in screenshot pixels. */
@@ -119,6 +122,9 @@ export interface VisualOptions {
   onProgress?: (msg: string) => void;
 }
 
+/** Browser warnings surfaced as errors that do not affect visitors. */
+export const BENIGN_ERRORS = /ResizeObserver loop (limit exceeded|completed with undelivered notifications)|^Script error\.?$/i;
+
 /** Content that changes on every load and would make diffs noisy. */
 export const DEFAULT_MASKS = [
   "iframe",
@@ -129,8 +135,20 @@ export const DEFAULT_MASKS = [
   ".swiper",
   ".carousel",
   "slideshow-component",
+  ".flickity-viewport",
+  "[data-flickity]",
+  ".splide",
+  ".glide",
+  ".owl-carousel",
+  ".keen-slider",
+  "marquee-component",
+  ".marquee",
   "[aria-live]",
   "#launcher",
+  // Email/SMS pop-ups that appear on a timer.
+  ".klaviyo-form",
+  "[class*='kl-private-reset-css']",
+  "[aria-modal='true']",
   "#hubspot-messages-iframe-container",
   ".intercom-lightweight-app",
 ];
@@ -151,7 +169,10 @@ function contextOptions(browser: BrowserName, viewport: ViewportName, ua?: strin
 /** Load, settle and measure one page. Lazy content is triggered by scrolling to the cap and back. */
 async function preparePage(page: Page, url: string, maxHeight: number) {
   const jsErrors: string[] = [];
-  page.on("pageerror", (e) => jsErrors.push(e.message.split("\n")[0]!.slice(0, 200)));
+  page.on("pageerror", (e) => {
+    const msg = e.message.split("\n")[0]!.slice(0, 200);
+    if (!BENIGN_ERRORS.test(msg)) jsErrors.push(msg);
+  });
   await page.goto(url, { waitUntil: "load", timeout: 45_000 });
   await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => undefined);
   await page.evaluate(async (cap) => {
@@ -164,7 +185,18 @@ async function preparePage(page: Page, url: string, maxHeight: number) {
     await document.fonts?.ready;
   }, maxHeight);
   await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => undefined);
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(500); // let scroll-driven header states settle back to "top of page"
+  // Freeze fixed and sticky elements. In a full-page capture they otherwise land wherever the last
+  // scroll left them (sticky headers mid-page, off-screen drawers sliding in), so identical pages "change".
+  await page.evaluate(() => {
+    window.scrollTo(0, 0);
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
+      const pos = getComputedStyle(el).position;
+      if (pos === "fixed") el.style.setProperty("position", "absolute", "important");
+      else if (pos === "sticky") el.style.setProperty("position", "static", "important");
+    }
+  });
+  await page.waitForTimeout(200);
 
   const facts = await page.evaluate(() => {
     const vw = document.documentElement.clientWidth;
@@ -265,7 +297,7 @@ export async function runVisualChecks(pages: { url: string; template: string }[]
     }
     try {
       for (const viewport of viewports) {
-        const context = await browser.newContext(contextOptions(name, viewport, o.userAgent));
+        const context = await newContext(browser, contextOptions(name, viewport, o.userAgent));
         try {
           for (const { url, template } of pages) {
             const key: BaselineKey = { url, browser: name, viewport };
@@ -273,6 +305,11 @@ export async function runVisualChecks(pages: { url: string; template: string }[]
             const page = await context.newPage();
             try {
               const facts = await preparePage(page, url, maxHeight);
+              if (isBotChallenge(await page.content())) {
+                cap.status = "blocked";
+                captures.push(cap);
+                continue;
+              }
               Object.assign(cap, { overflowPx: facts.overflowPx, overflowElement: facts.overflowElement, jsErrors: facts.jsErrors, brokenImages: facts.brokenImages, hasViewportMeta: facts.hasViewportMeta });
               const width = VIEWPORTS[viewport].width;
               const png = await page.screenshot({
@@ -327,7 +364,10 @@ const list = (bs: BrowserName[]) => bs.map((b) => BROWSER_LABEL[b]).join(", ");
 /** Findings from captures. Cross-browser problems are merged across browsers so each shows once. */
 export function visualFindings(captures: VisualCapture[], allBrowsers: BrowserName[]): FindingInput[] {
   const out: FindingInput[] = [];
-  const ok = captures.filter((c) => c.status !== "error");
+  const ok = captures.filter((c) => c.status !== "error" && c.status !== "blocked");
+  const blockedCaps = captures.filter((c) => c.status === "blocked");
+  if (blockedCaps.length)
+    out.push({ category: "visual", rule: "visual.blocked", severity: "info", title: `${blockedCaps.length} screenshot${blockedCaps.length === 1 ? "" : "s"} skipped: blocked by bot protection`, url: blockedCaps[0]!.url, detail: "The site showed a \"verify you are human\" challenge, so these pages were not compared. Ask the site owner to allowlist the MatterTest crawler.", evidence: { captures: blockedCaps.map((c) => `${c.url} ${c.browser}/${c.viewport}`).slice(0, 30) } });
 
   for (const c of captures.filter((x) => x.status === "changed")) {
     const pct = ((c.diffRatio ?? 0) * 100).toFixed(1);

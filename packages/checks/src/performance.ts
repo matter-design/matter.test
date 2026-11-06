@@ -20,6 +20,11 @@ export interface PerfMetrics {
   fcp: number | null;
   /** Largest Contentful Paint, ms. */
   lcp: number | null;
+  /**
+   * LCP actually observed during the Lighthouse load, unthrottled (Lighthouse engine only).
+   * The simulated mobile LCP can be many times higher on request-heavy pages; reports show both.
+   */
+  observedLcp?: number | null;
   /** Element that was the LCP candidate. */
   lcpElement: string | null;
   /** Cumulative Layout Shift (session-window max, as web-vitals computes it). */
@@ -280,8 +285,8 @@ export function perfFindings(m: PerfMetrics, budgets: PerfBudgets = DEFAULT_BUDG
       severity: sev,
       title: `${LABEL[metric]} ${rating === "poor" ? "poor" : "needs improvement"}: ${fmt(metric, v)}`,
       url: m.url,
-      detail: `Good is ≤ ${fmt(metric, t.good)}, poor is > ${fmt(metric, t.poor)}.${metric === "lcp" && m.lcpElement ? ` LCP element: ${m.lcpElement}` : ""}${metric === "tbt" ? " TBT is the lab proxy for INP." : ""}`,
-      evidence: { metric, value: v, rating, thresholds: t, ...lab, ...(metric === "lcp" ? { lcpElement: m.lcpElement } : {}) },
+      detail: `Good is ≤ ${fmt(metric, t.good)}, poor is > ${fmt(metric, t.poor)}.${metric === "lcp" && m.lcpElement ? ` LCP element: ${m.lcpElement}` : ""}${metric === "lcp" && m.observedLcp ? ` Observed without throttling: ${fmt("lcp", m.observedLcp)} (the simulated mobile figure assumes a slow 4G phone; ${m.requests} requests and ${mb(m.transferBytes)} drive it).` : ""}${metric === "tbt" ? " TBT is the lab proxy for INP." : ""}`,
+      evidence: { metric, value: v, rating, thresholds: t, ...lab, ...(metric === "lcp" ? { lcpElement: m.lcpElement, observedLcp: m.observedLcp } : {}) },
     });
   }
 

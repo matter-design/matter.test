@@ -68,13 +68,23 @@ let base: string;
 let browser: Browser;
 
 const page = () => `<html lang="en"><head><title>Visual</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{margin:0;font:16px sans-serif} .hero{height:300px;background:${variant === "a" ? "#1f6feb" : "#d1242f"}} .wide{width:600px;height:20px;background:#eee}
-  @media (min-width: 700px) { .wide { width: 100% } }</style></head>
-  <body><div class="hero"></div><h1>Store</h1><div class="wide"></div>
+  @media (min-width: 700px) { .wide { width: 100% } }
+  header{position:sticky;top:0;height:60px;background:#fff;z-index:5} header.scrolled{background:#333}
+  .drawer{position:fixed;top:0;left:0;right:0;height:200px;background:#eee;transform:translateY(-100%)}
+  .chat{position:fixed;right:10px;bottom:10px;width:50px;height:50px;border-radius:25px;background:#0a0}
+  .tall{height:2400px;background:linear-gradient(#fff,#ccc)}</style></head>
+  <body><header>Header</header><div class="drawer">Search for anything</div><div class="chat"></div>
+  <div class="hero"></div><h1>Store</h1><div class="wide"></div><div class="tall"></div>
+  <script>addEventListener("scroll", () => document.querySelector("header").classList.toggle("scrolled", scrollY > 50))</script>
   <script>if (navigator.userAgent.includes("Firefox")) { setTimeout(() => { throw new Error("only in firefox") }) }</script></body></html>`;
 
 beforeAll(async () => {
   process.env.ARTEFACT_DIR = await mkdtemp(join(tmpdir(), "mt-visual-"));
-  server = createServer((_req, res) => res.writeHead(200, { "content-type": "text/html" }).end(page()));
+  server = createServer((req, res) =>
+    req.url === "/challenge"
+      ? res.writeHead(403, { "content-type": "text/html" }).end("<html><head><title>Just a moment...</title></head><body>Verify you are human</body></html>")
+      : res.writeHead(200, { "content-type": "text/html" }).end(page()),
+  );
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
   browser = await chromium.launch();
@@ -97,12 +107,16 @@ describe("runVisualChecks in Chromium, Firefox and WebKit", () => {
     expect(first.captures).toHaveLength(6);
     expect(first.captures.map((c) => c.status)).toEqual(Array(6).fill("baseline-created"));
 
+    // Unchanged page captured again: sticky header, fixed drawer and fixed chat bubble must not cause "changes".
+    const again = await runVisualChecks(pages, { ...opts, viewports: [...opts.viewports], store: fileBaselineStore("fixture", "run1b") });
+    expect(again.captures.map((c) => [c.browser, c.viewport, c.status, c.diffRatio])).toEqual(first.captures.map((c) => [c.browser, c.viewport, "match", 0]));
+
     variant = "b"; // hero turns red
     const second = await runVisualChecks(pages, { ...opts, viewports: [...opts.viewports], store: fileBaselineStore("fixture", "run2") });
     expect(second.captures.map((c) => c.status)).toEqual(Array(6).fill("changed"));
     const c = second.captures.find((x) => x.browser === "webkit" && x.viewport === "desktop")!;
     expect(c.diffRatio).toBeGreaterThan(0.05);
-    expect(c.changedBox).toMatchObject({ x: 0, y: 0, height: 300 });
+    expect(c.changedBox).toMatchObject({ x: 0, y: 60, height: 300 }); // hero sits under the 60 px header
     expect(PNG.sync.read(await readFile(artefactPath(c.diffUri!))).width).toBe(1440);
 
     const f = visualFindings(second.captures, ["chromium", "firefox", "webkit"]);
@@ -119,5 +133,12 @@ describe("runVisualChecks in Chromium, Firefox and WebKit", () => {
     expect(accepted.captures[0]!.status).toBe("baseline-created");
     const after = await runVisualChecks(pages, { ...opts, viewports: ["desktop"], browsers: ["chromium"], store: fileBaselineStore("fixture", "run4") });
     expect(after.captures[0]!.status).toBe("match");
+
+    // A bot challenge is never compared or stored as a baseline.
+    const store = fileBaselineStore("fixture", "run5");
+    const ch = await runVisualChecks([{ url: `${base}challenge`, template: "home" }], { ...opts, viewports: ["desktop"], browsers: ["chromium"], store });
+    expect(ch.captures[0]!.status).toBe("blocked");
+    expect(await store.get({ url: `${base}challenge`, browser: "chromium", viewport: "desktop" })).toBeNull();
+    expect(visualFindings(ch.captures, ["chromium"]).map((f) => f.rule)).toEqual(["visual.blocked"]);
   }, 240_000);
 });

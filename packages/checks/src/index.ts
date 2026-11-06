@@ -1,4 +1,5 @@
 export * from "./a11y";
+export * from "./browser-shim";
 export * from "./crawl";
 export * from "./lighthouse";
 export * from "./links";

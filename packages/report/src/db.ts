@@ -21,6 +21,9 @@ export function perfFromCheckResults(rows: PerfRow[]): ReportPerf[] {
     const n = typeof v.value === "number" ? v.value : null;
     switch (r.metric) {
       case "lcp":
+        p.lcp = n;
+        if (typeof v.observed === "number") p.observedLcp = v.observed;
+        break;
       case "cls":
       case "tbt":
       case "fcp":

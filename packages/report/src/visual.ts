@@ -6,7 +6,7 @@ export interface ReportCapture {
   template: string;
   browser: string;
   viewport: string;
-  status: "baseline-created" | "match" | "changed" | "error";
+  status: "baseline-created" | "match" | "changed" | "blocked" | "error";
   diffRatio?: number;
   changedBox?: { x: number; y: number; width: number; height: number };
   baselineUri?: string;
