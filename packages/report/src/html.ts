@@ -79,6 +79,47 @@ function a11ySection(m: ReportModel): string {
   </section>`;
 }
 
+const BROWSER_NAME: Record<string, string> = { chromium: "Chrome", firefox: "Firefox", webkit: "Safari" };
+const VIEWPORT_NAME: Record<string, string> = { mobile: "Phone", tablet: "Tablet", desktop: "Desktop" };
+
+/** One cell of the browser x device grid: the most important thing about that capture. */
+function matrixCell(c: import("./visual").ReportCapture | undefined): string {
+  if (!c) return `<td class="mx muted">–</td>`;
+  if (c.status === "error") return `<td class="mx"><span class="mxb bad">Failed</span></td>`;
+  const issues: [string, string][] = [];
+  if (c.jsErrors.length) issues.push(["bad", "JS error"]);
+  if (c.overflowPx > 1) issues.push(["bad", "Scrolls sideways"]);
+  if (c.status === "changed") issues.push(["warn", `Changed ${((c.diffRatio ?? 0) * 100).toFixed(1)}%`]);
+  if (!issues.length) return `<td class="mx">${c.status === "baseline-created" ? `<span class="mxb new">Baseline</span>` : `<span class="mxb ok">OK</span>`}</td>`;
+  return `<td class="mx">${issues.map(([k, t]) => `<span class="mxb ${k}">${t}</span>`).join("")}</td>`;
+}
+
+function visualSection(m: ReportModel): string {
+  const v = m.input.visual;
+  if (!v || !m.input.categoriesRun.includes("visual")) return "";
+  const pages = [...new Map(v.captures.map((c) => [c.url, c.template])).entries()];
+  const cols = v.browsers.flatMap((b) => v.viewports.map((vp) => [b, vp] as const));
+  const find = (url: string, b: string, vp: string) => v.captures.find((c) => c.url === url && c.browser === b && c.viewport === vp);
+  const firstRun = v.captures.length > 0 && v.captures.every((c) => c.status === "baseline-created" || c.status === "error");
+  const groups = m.groups.filter((g) => g.category === "visual");
+  const changes = v.changes ?? [];
+  return `<section class="page-break">
+    <h2>${esc(CATEGORY_COPY.visual!.label)}</h2>
+    <p class="intro">${esc(CATEGORY_COPY.visual!.intro)}</p>
+    <table class="matrix"><thead>
+      <tr><th rowspan="2">Page type</th>${v.browsers.map((b) => `<th colspan="${v.viewports.length}" class="grp">${esc(BROWSER_NAME[b] ?? b)}</th>`).join("")}</tr>
+      <tr>${cols.map(([, vp]) => `<th class="mx">${esc(VIEWPORT_NAME[vp] ?? vp)}</th>`).join("")}</tr>
+    </thead><tbody>
+      ${pages.map(([url, t]) => `<tr><td><b>${esc(templateLabel(t))}</b><div class="muted small url">${esc(pageLabel(url))}</div></td>${cols.map(([b, vp]) => matrixCell(find(url, b, vp))).join("")}</tr>`).join("")}
+    </tbody></table>
+    ${firstRun ? `<p class="note">This was the first check, so these screenshots are now the approved baseline. Future checks will compare against them and show what changed.</p>` : ""}
+    ${v.skippedBrowsers?.length ? `<p class="muted small">Not tested: ${v.skippedBrowsers.map((s) => esc(BROWSER_NAME[s.browser] ?? s.browser)).join(", ")} (browser unavailable on the test machine).</p>` : ""}
+    ${changes.length ? `<h3>What changed</h3>${changes.map((c) => `<div class="change"><p><b>${esc(templateLabel(c.template))}</b> <span class="muted small">${esc(pageLabel(c.url))} · ${esc(BROWSER_NAME[c.browser] ?? c.browser)} ${esc((VIEWPORT_NAME[c.viewport] ?? c.viewport).toLowerCase())} · ${(c.diffRatio * 100).toFixed(1)}% of the page</span></p>
+      <div class="ba"><figure><img src="${c.before}" alt="Approved version"><figcaption>Approved</figcaption></figure><figure><img src="${c.after}" alt="This check"><figcaption>Now</figcaption></figure></div></div>`).join("")}` : ""}
+    ${groups.length ? `<h3>Issues</h3>${issueTable(groups)}` : ""}
+  </section>`;
+}
+
 function categorySection(m: ReportModel, cat: "seo" | "links" | "crawl" | "security" | "platform"): string {
   if (!m.input.categoriesRun.includes(cat)) return "";
   const copy = CATEGORY_COPY[cat]!;
@@ -184,6 +225,17 @@ export function renderReportHtml(m: ReportModel): string {
   .note { margin-top: 14px; padding: 10px 12px; background: var(--soft); border-radius: 6px; font-size: 8.5pt; color: var(--muted); }
   .insights { padding-left: 16px; } .insights li { margin: 3px 0; }
 
+  table.matrix { font-size: 8pt; }
+  table.matrix th.grp { text-align: center; border-bottom: 1px solid var(--line); }
+  table.matrix th.mx, table.matrix td.mx { text-align: center; padding: 6px 3px; }
+  .mxb { display: block; font-size: 7pt; font-weight: 600; border-radius: 4px; padding: 1px 3px; margin: 1px 0; white-space: nowrap; }
+  .mxb.ok { color: var(--good); background: var(--good-bg); } .mxb.warn { color: var(--ni); background: var(--ni-bg); }
+  .mxb.bad { color: var(--poor); background: var(--poor-bg); } .mxb.new { color: var(--muted); background: var(--soft); }
+  .change { break-inside: avoid; margin-bottom: 14px; }
+  .ba { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .ba figure { margin: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .ba img { display: block; width: 100%; max-height: 90mm; object-fit: contain; object-position: top left; background: var(--soft); }
+  .ba figcaption { font-size: 8pt; color: var(--muted); padding: 3px 8px; border-top: 1px solid var(--line); }
   .appendix .app-group { margin-bottom: 12px; break-inside: avoid-page; }
   .appendix h4 { margin-bottom: 4px; }
   .appendix ul { margin: 0; padding-left: 16px; columns: 1; }
@@ -228,6 +280,7 @@ ${m.priorities.length ? `<section class="page-break"><h2>Fix these first</h2><p 
 
 ${perfSection(m)}
 ${a11ySection(m)}
+${visualSection(m)}
 ${otherAreas(m)}
 ${appendix(m)}
 </body></html>`;

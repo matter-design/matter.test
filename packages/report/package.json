@@ -13,6 +13,10 @@
   },
   "dependencies": {
     "@mattertest/core": "workspace:*",
-    "playwright": "1.63.0"
+    "playwright": "1.63.0",
+    "pngjs": "7.0.0"
+  },
+  "devDependencies": {
+    "@types/pngjs": "6.0.5"
   }
 }

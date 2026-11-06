@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromium, type Browser } from "playwright";
-import { buildReport, groupFindings, perfFromCheckResults, renderReportHtml, renderReportPdf, type ReportFinding } from "../src/index";
+import { PNG } from "pngjs";
+import { buildReport, groupFindings, perfFromCheckResults, renderReportHtml, renderReportPdf, visualChanges, type ReportCapture, type ReportFinding } from "../src/index";
 import { sampleInput } from "./sample";
 
 describe("grouping", () => {
@@ -27,8 +28,8 @@ describe("report model", () => {
   const m = buildReport(sampleInput());
 
   it("summarises severities and leads with the urgent work", () => {
-    expect(m.bySeverity).toEqual({ critical: 4, high: 10, medium: 19, low: 44, info: 0 });
-    expect(m.headline).toBe("4 critical and 10 high-priority issues across 184 pages need attention first.");
+    expect(m.bySeverity).toEqual({ critical: 4, high: 11, medium: 23, low: 44, info: 0 });
+    expect(m.headline).toBe("4 critical and 11 high-priority issues across 184 pages need attention first.");
     expect(m.priorities[0]!.severity).toBe("critical");
     expect(m.priorities.every((g) => g.severity === "critical" || g.severity === "high")).toBe(true);
   });
@@ -71,6 +72,34 @@ describe("HTML", () => {
   });
 });
 
+describe("browsers and devices", () => {
+  it("draws the browser x device grid with the most important problem per cell", () => {
+    const html = renderReportHtml(buildReport(sampleInput()));
+    expect(html).toContain("Browsers and devices");
+    expect(html).toContain('<th colspan="3" class="grp">Safari</th>');
+    expect(html).toContain("Changed 8.4%");
+    expect(html).toContain("Scrolls sideways");
+    expect(html).toContain("JS error");
+  });
+
+  it("crops before/after images around the change, one per page, biggest first", async () => {
+    const img = (fill: number) => {
+      const p = new PNG({ width: 400, height: 300 });
+      p.data.fill(fill);
+      return PNG.sync.write(p);
+    };
+    const files: Record<string, Buffer> = { "b.png": img(255), "c.png": img(0) };
+    const cap = (over: Partial<ReportCapture>): ReportCapture => ({ url: "https://x.test/", template: "home", browser: "chromium", viewport: "desktop", status: "changed", diffRatio: 0.1, changedBox: { x: 100, y: 50, width: 50, height: 40 }, baselineUri: "b.png", currentUri: "c.png", overflowPx: 0, jsErrors: [], brokenImages: [], ...over });
+    const changes = await visualChanges(
+      [cap({ browser: "webkit", viewport: "mobile" }), cap({}), cap({ url: "https://x.test/a", diffRatio: 0.4 }), cap({ url: "https://x.test/gone", currentUri: "missing.png" })],
+      async (u) => files[u] ?? null,
+    );
+    expect(changes.map((c) => [c.url, c.browser, c.viewport])).toEqual([["https://x.test/a", "chromium", "desktop"], ["https://x.test/", "chromium", "desktop"]]);
+    const crop = PNG.sync.read(Buffer.from(changes[0]!.before.split(",")[1]!, "base64"));
+    expect([crop.width, crop.height]).toEqual([98, 88]); // 50x40 box + 24 px padding each side
+  });
+});
+
 describe("check_results adapter", () => {
   it("rebuilds per-page performance from stored metric rows", () => {
     const url = "https://x.test/";
@@ -107,4 +136,20 @@ describe("PDF", () => {
     expect(Math.round(Number(w))).toBe(595);
     expect(Math.round(Number(h))).toBe(842);
   }, 60_000);
+});
+
+describe("artefact folder", () => {
+  it("resolves a relative ARTEFACT_DIR from the repo root, whatever the current folder", async () => {
+    const { artefactDir, artefactPath } = await import("@mattertest/core");
+    const before = process.env.ARTEFACT_DIR;
+    process.env.ARTEFACT_DIR = "./artefacts";
+    try {
+      expect(artefactDir()).toMatch(/[/\\]artefacts$/);
+      expect(artefactDir()).not.toContain(`${"packages"}/report/artefacts`);
+      expect(() => artefactPath("../../etc/passwd")).toThrow(/escapes/);
+    } finally {
+      if (before === undefined) delete process.env.ARTEFACT_DIR;
+      else process.env.ARTEFACT_DIR = before;
+    }
+  });
 });

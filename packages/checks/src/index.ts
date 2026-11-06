@@ -9,3 +9,4 @@ export * from "./robots";
 export * from "./run";
 export * from "./security";
 export * from "./seo";
+export * from "./visual";

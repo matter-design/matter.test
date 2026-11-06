@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve, sep } from "node:path";
 import { z } from "zod";
 
 /** Platforms with a dedicated check pack. */
@@ -110,3 +112,32 @@ export const QUEUES = {
   sanity: "sanity",
   agent: "agent",
 } as const;
+
+/** The monorepo root (folder holding pnpm-workspace.yaml), or the current folder outside the repo. */
+function repoRoot(): string {
+  let dir = process.cwd();
+  for (;;) {
+    if (existsSync(join(dir, "pnpm-workspace.yaml"))) return dir;
+    const up = dirname(dir);
+    if (up === dir) return process.cwd();
+    dir = up;
+  }
+}
+
+/**
+ * Where screenshots, diffs and reports are written. One folder shared by the CLI, worker and web app:
+ * ARTEFACT_DIR if set, else <repo root>/artefacts. A relative ARTEFACT_DIR is resolved from the repo root,
+ * not the current folder, because each app runs from its own package folder.
+ * Stored URIs are paths relative to this folder.
+ */
+export function artefactDir(): string {
+  return resolve(repoRoot(), process.env.ARTEFACT_DIR || "artefacts");
+}
+
+/** Resolve a stored artefact URI inside artefactDir(), refusing anything that escapes it. */
+export function artefactPath(uri: string): string {
+  const root = artefactDir();
+  const full = resolve(root, uri);
+  if (full !== root && !full.startsWith(root + sep)) throw new Error(`artefact path escapes the artefact folder: ${uri}`);
+  return full;
+}

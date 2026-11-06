@@ -1,9 +1,13 @@
-import type { CheckCategory } from "@mattertest/core";
+import { readFile } from "node:fs/promises";
+import { artefactPath, type CheckCategory } from "@mattertest/core";
 import type { SiteCheckResult } from "@mattertest/checks";
-import type { ReportInput } from "@mattertest/report";
+import { visualChanges, type ReportInput } from "@mattertest/report";
 
-/** Categories the engine actually runs today; visual and reporting are not checks yet. */
-export const RUNNABLE: CheckCategory[] = ["crawl", "links", "seo", "performance", "accessibility", "security", "platform"];
+/** Read a stored artefact, or null if it is missing. */
+export const readArtefact = (uri: string) => readFile(artefactPath(uri)).catch(() => null);
+
+/** Categories the engine runs; "reporting" is not a check. */
+export const RUNNABLE: CheckCategory[] = ["crawl", "links", "seo", "performance", "accessibility", "security", "platform", "visual"];
 
 export interface CliReportMeta {
   baseUrl: string;
@@ -13,7 +17,7 @@ export interface CliReportMeta {
 }
 
 /** Report input from a CLI site-check result (no database: client and project names come from flags). */
-export function reportInputFromResult(result: SiteCheckResult, meta: CliReportMeta, names: { client?: string; project?: string } = {}): ReportInput {
+export async function reportInputFromResult(result: SiteCheckResult, meta: CliReportMeta, names: { client?: string; project?: string } = {}): Promise<ReportInput> {
   const host = new URL(meta.baseUrl).host.replace(/^www\./, "");
   return {
     client: { name: names.client ?? host },
@@ -25,6 +29,7 @@ export function reportInputFromResult(result: SiteCheckResult, meta: CliReportMe
     templates: result.templates,
     categoriesRun: meta.categories.filter((c) => RUNNABLE.includes(c)),
     perf: result.perf,
+    visual: result.visual ? { ...result.visual, changes: await visualChanges(result.visual.captures, readArtefact) } : null,
     perfProfile: meta.perfThrottle,
     findings: result.findings,
   };
