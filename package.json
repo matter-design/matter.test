@@ -1,0 +1,27 @@
+{
+  "name": "mattertest",
+  "private": true,
+  "description": "Internal agentic test management tool: doc-to-test generation, website checks, self-healing sanity tests.",
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "db:generate": "pnpm --filter @mattertest/db generate",
+    "db:migrate": "pnpm --filter @mattertest/db migrate",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "check": "pnpm --filter @mattertest/worker check",
+    "db:seed": "pnpm --filter @mattertest/db seed",
+    "web": "pnpm --filter @mattertest/web dev",
+    "worker": "pnpm --filter @mattertest/worker dev"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "turbo": "^2.11.10",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  }
+}

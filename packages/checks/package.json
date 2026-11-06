@@ -1,0 +1,19 @@
+{
+  "name": "@mattertest/checks",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@mattertest/core": "workspace:*",
+    "cheerio": "^1.2.0",
+    "playwright": "1.63.0"
+  }
+}
