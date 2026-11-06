@@ -15,9 +15,13 @@ export interface PackContext {
   robotsTxt: string | null;
 }
 
+/** A plain GET of a fixed path on the site (no redirects followed, body capped). Null if unreachable. */
+export type PackGet = (path: string) => Promise<{ status: number; body: string; headers: Record<string, string> } | null>;
+
 /**
  * A platform pack adds checks that only make sense on one platform.
- * Packs are passive: they read pages the crawler already fetched plus robots.txt.
+ * Packs are passive: they read pages the crawler already fetched plus robots.txt, and may
+ * GET a short fixed list of well-known public paths (never POST, never payloads).
  */
 export interface PlatformPack {
   platform: Platform;
@@ -25,4 +29,6 @@ export interface PlatformPack {
   templateOf?(html: string): string | undefined;
   pageFindings(page: PackPage, ctx: PackContext): FindingInput[];
   siteFindings(pages: PackPage[], ctx: PackContext): FindingInput[];
+  /** Optional GETs of well-known public paths (e.g. a public user list). */
+  probe?(ctx: PackContext, get: PackGet): Promise<FindingInput[]>;
 }
