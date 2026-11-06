@@ -45,7 +45,10 @@ export function shopifyTemplate(html: string): string | undefined {
   const t = shopifyPageType(html);
   if (!t) return undefined;
   if (t.startsWith("customers")) return "account";
-  return PAGE_TYPE_TO_TEMPLATE[t] ?? t;
+  if (PAGE_TYPE_TO_TEMPLATE[t]) return PAGE_TYPE_TO_TEMPLATE[t];
+  // Alternate templates (page.contact, product.bundle) show up as page-contact, product-bundle: group under the base type.
+  const base = t.split(/[.-]/)[0]!;
+  return PAGE_TYPE_TO_TEMPLATE[base] ?? t;
 }
 
 const STORE_DOMAIN = /(^|\.)myshopify\.com$/i;

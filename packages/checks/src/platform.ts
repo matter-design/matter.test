@@ -16,7 +16,7 @@ const RULES: { platform: Platform; html?: RegExp[]; headers?: [string, RegExp][]
   {
     platform: "shopify",
     html: [/cdn\.shopify\.com/i, /Shopify\.theme\s*=/i, /shopify-section/i],
-    headers: [["x-shopify-stage", /.+/], ["x-shopid", /.+/]],
+    headers: [["x-shopify-stage", /.+/], ["x-shopid", /.+/], ["powered-by", /shopify/i]],
   },
   {
     platform: "wordpress",

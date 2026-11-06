@@ -1,8 +1,9 @@
 import type { Browser } from "playwright";
+import { newContext } from "./browser-shim";
 import type { CheckCategory, FindingInput, Platform } from "@mattertest/core";
 import { axeFindings } from "./a11y";
 import { crawl, type CrawledPage, fetchText, normaliseUrl } from "./crawl";
-import { checkUrls, linkFindings } from "./links";
+import { checkUrls, linkFindings, RateLimiter } from "./links";
 import { detectPlatform } from "./platform";
 import { packFor, type PackPage } from "./packs";
 import { startLighthouse, type LighthouseRunner } from "./lighthouse";
@@ -73,16 +74,33 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
   const findings: FindingInput[] = [];
 
   log(`crawling ${o.baseUrl} (max ${o.maxPages} pages)`);
-  const pages = await crawl(browser, o.baseUrl, {
+  const crawlLimiter = new RateLimiter(o.delayMs ?? 250, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+  const crawled = await crawl(browser, o.baseUrl, {
+    limiter: crawlLimiter,
     maxPages: o.maxPages,
     concurrency: o.concurrency ?? 4,
     delayMs: o.delayMs ?? 250,
     userAgent: ua,
     respectRobots: o.respectRobots ?? true,
   });
-  log(`crawled ${pages.length} pages`);
+  // Pages behind a bot-protection challenge are not the site: keep them out of every check.
+  const blocked = crawled.filter((p) => p.blocked);
+  const pages = crawled.filter((p) => !p.blocked);
+  log(`crawled ${crawled.length} pages${blocked.length ? ` (${blocked.length} blocked by bot protection)` : ""}`);
+  if (blocked.length)
+    findings.push({
+      category: "crawl",
+      rule: "crawl.bot-protection",
+      severity: "info",
+      title: `${blocked.length} page${blocked.length === 1 ? "" : "s"} not checked: blocked by bot protection`,
+      url: blocked[0]!.url,
+      detail: "The site served a \"verify you are human\" challenge (e.g. Cloudflare) instead of the page. We do not try to get past these. Ask the site owner to allowlist the MatterTest crawler (user agent or IP) so scheduled checks can see every page.",
+      evidence: { count: blocked.length, examples: blocked.slice(0, 20).map((p) => p.url) },
+    });
 
-  const home = pages[0];
+  // The crawl order is not guaranteed (sitemap seeds, concurrency), so find the home page explicitly.
+  const baseNorm = normaliseUrl(o.baseUrl, o.baseUrl);
+  const home = pages.find((p) => p.url === baseNorm && p.html) ?? pages.find((p) => p.html && !p.error && (p.status ?? 0) < 400) ?? pages[0];
   const { platform, evidence } = home ? detectPlatform(home.html, home.headers) : { platform: "custom" as Platform, evidence: [] };
 
   const pack = packFor(platform);
@@ -100,6 +118,7 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
   if (want.has("crawl")) {
     for (const p of pages) {
       if (p.error) findings.push({ category: "crawl", rule: "crawl.page-error", severity: "high", title: "Page failed to load", url: p.url, detail: p.error });
+      else if (p.status === 429) findings.push({ category: "crawl", rule: "crawl.rate-limited", severity: "info", title: "Page not checked: the site asked us to slow down (429)", url: p.url });
       else if (p.status && p.status >= 400) findings.push({ category: "crawl", rule: `crawl.status-${p.status}`, severity: p.status >= 500 ? "high" : "medium", title: `Page returned ${p.status}`, url: p.url });
     }
   }
@@ -122,8 +141,14 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
     }
     // Crawled pages already have a status; only fetch what the crawler did not visit.
     log(`checking ${linkRefs.size} uncrawled links and ${imgRefs.size} images`);
-    findings.push(...linkFindings(await checkUrls([...linkRefs.keys()], ua), linkRefs, "link"));
-    findings.push(...linkFindings(await checkUrls([...imgRefs.keys()].slice(0, 2000), ua), imgRefs, "image"));
+    // One limiter for links and images: if the site rate-limits us, both slow down, and both stop together.
+    // Start at the pace the crawl settled on: if the site pushed back during the crawl, don't hammer it now.
+    const limiter = new RateLimiter(Math.max(150, crawlLimiter.delayMs));
+    // Most-linked first (menus, footers, shared banners): if the budget runs out, what is left is the long tail.
+    const byReach = (m: Map<string, Set<string>>) => [...m.keys()].sort((a, b) => m.get(b)!.size - m.get(a)!.size);
+    findings.push(...linkFindings(await checkUrls(byReach(linkRefs), ua, { limiter }), linkRefs, "link"));
+    findings.push(...linkFindings(await checkUrls(byReach(imgRefs).slice(0, 2000), ua, { limiter }), imgRefs, "image"));
+    if (limiter.tripped) log(`link checks stopped early (${limiter.tripped}); the rest are reported as not verified`);
   }
 
   if (want.has("seo")) {
@@ -134,7 +159,7 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
 
   if (want.has("security") && home) {
     findings.push(...securityHeaderFindings(home.url, home.headers));
-    const ctx = await browser.newContext({ userAgent: ua });
+    const ctx = await newContext(browser, { userAgent: ua });
     const pg = await ctx.newPage();
     await pg.goto(home.url, { waitUntil: "domcontentloaded" }).catch(() => undefined);
     const cookies = await ctx.cookies();
@@ -156,7 +181,7 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
     const perTemplate = o.a11yPagesPerTemplate ?? 2;
     const sample = [...byTemplate.values()].flatMap((ps) => ps.filter((p) => !p.error).slice(0, perTemplate));
     log(`axe scan on ${sample.length} pages (WCAG 2.2 AA)`);
-    const ctx = await browser.newContext({ userAgent: ua });
+    const ctx = await newContext(browser, { userAgent: ua });
     const pg = await ctx.newPage();
     for (const p of sample) {
       try {
@@ -188,7 +213,7 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
       for (const p of sample) {
         const template = templateOf.get(p.url) ?? "unknown";
         // Fresh context per page: cold cache, like a first visit.
-        const ctx = await browser.newContext({ userAgent: ua, viewport: throttle === "mobile" ? { width: 412, height: 823 } : undefined });
+        const ctx = await newContext(browser, { userAgent: ua, viewport: throttle === "mobile" ? { width: 412, height: 823 } : undefined });
         try {
           let m: PerfMetrics | undefined;
           if (lh) {
@@ -259,7 +284,7 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
   return {
     platform,
     platformEvidence: evidence,
-    pages: pages.map(({ html: _html, ...rest }) => rest),
+    pages: crawled.map(({ html: _html, ...rest }) => rest),
     templates,
     perf,
     visual,

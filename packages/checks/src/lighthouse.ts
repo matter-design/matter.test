@@ -74,6 +74,7 @@ export function toMetrics(url: string, lhr: { audits: Record<string, Audit>; cat
   const summary = tableItems(a["resource-summary"]);
   const bytesOf = (type: string) => Number(summary.find((i) => i.resourceType === type)?.transferSize ?? 0);
   const score = lhr.categories.performance?.score;
+  const observed = (tableItems(a["metrics"])[0] ?? {}) as Record<string, unknown>;
 
   // Failing insights and diagnostics, worst first: these are the "what to fix" list in the report.
   const insights = Object.entries(a)
@@ -89,6 +90,7 @@ export function toMetrics(url: string, lhr: { audits: Record<string, Audit>; cat
     ttfb: num(a["server-response-time"]),
     fcp: num(a["first-contentful-paint"]),
     lcp: num(a["largest-contentful-paint"]),
+    observedLcp: typeof observed.observedLargestContentfulPaint === "number" ? Math.round(observed.observedLargestContentfulPaint) : null,
     lcpElement: findNode(a["lcp-breakdown-insight"]?.details) ?? findNode(a["largest-contentful-paint-element"]?.details),
     cls: Math.round((a["cumulative-layout-shift"]?.numericValue ?? 0) * 1000) / 1000,
     tbt: num(a["total-blocking-time"]) ?? 0,

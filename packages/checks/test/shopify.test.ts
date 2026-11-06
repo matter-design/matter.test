@@ -19,6 +19,12 @@ describe("Shopify templates", () => {
     expect(shopifyTemplate(doc("collection", ""))).toBe("plp");
     expect(shopifyTemplate(doc("index", ""))).toBe("home");
     expect(shopifyTemplate(doc("customers-login", ""))).toBe("account");
+    // Alternate templates (page.contact, product.bundle) group under their base type.
+    expect(shopifyTemplate(doc("page-contact", ""))).toBe("landing");
+    expect(shopifyTemplate(doc("page-fitting-guide", ""))).toBe("landing");
+    expect(shopifyTemplate(doc("product-bundle", ""))).toBe("pdp");
+    expect(shopifyTemplate(doc("collection-sale", ""))).toBe("plp");
+    expect(shopifyTemplate(doc("list-collections", ""))).toBe("plp");
     expect(shopifyTemplate(`<html><body class="gradient"><script>var meta = {"page":{"pageType":"product"}};</script></body></html>`)).toBe("pdp");
     expect(shopifyTemplate("<html><body></body></html>")).toBeUndefined();
   });

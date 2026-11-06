@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromium, type Browser } from "playwright";
-import { runSiteCheck } from "../src/index";
+import { checkUrls, interleave, RateLimiter, retryDelayMs, runSiteCheck } from "../src/index";
 
 /** A tiny fake storefront with known problems, so the full pipeline can be checked offline. */
 const PAGES: Record<string, { status?: number; headers?: Record<string, string>; body: string }> = {
@@ -11,7 +11,8 @@ const PAGES: Record<string, { status?: number; headers?: Record<string, string>;
       <link rel="canonical" href="/"><meta property="og:title" content="Home">
       <script src="https://cdn11.bigcommerce.com/s-test/app.js" async></script><script>var jsContext = {};</script></head>
       <body><h1>Fixture store</h1>
-      <a href="/products/tent">Tent</a> <a href="/category/tents/">Tents</a> <a href="/missing">Broken</a> <a href="/orbit-terrarium/">Orbit</a> <a href="/old">Old</a>
+      <a href="/products/tent">Tent</a> <a href="/category/tents/">Tents</a> <a href="/missing">Broken</a> <a href="/orbit-terrarium/">Orbit</a> <a href="/agents">Agent notes</a> <a href="/flaky">Flaky</a> <a href="/members">Members</a>
+      <img src="/img/busy.png" alt="rate limited image"> <a href="/old">Old</a>
       <img src="/img/missing.png" alt="missing image">
       <button><svg width="10" height="10"></svg></button>
       <form method="post" action="/cart.php"><button type="submit">Add to cart</button></form>
@@ -31,10 +32,19 @@ const PAGES: Record<string, { status?: number; headers?: Record<string, string>;
   "/old": { status: 301, headers: { location: "/older" }, body: "" },
   "/older": { status: 301, headers: { location: "/oldest" }, body: "" },
   "/oldest": { status: 301, headers: { location: "/products/tent" }, body: "" },
+  // 429 on the first request, fine after: the crawler must back off, retry and get the page.
+  "/flaky": { body: `<html lang="en"><head><title>Flaky | Fixture</title></head><body><h1>Flaky</h1></body></html>` },
+  // A Cloudflare-style challenge served instead of the page: must be excluded from every check.
+  "/members": { status: 403, body: `<html><head><title>Just a moment...</title></head><body><h2>Verify you are human</h2><div class="cf-turnstile"></div></body></html>` },
+  // Markdown without a file extension: must not be treated as a page.
+  "/agents": { headers: { "content-type": "text/markdown" }, body: "# Notes for agents" },
+  // Always rate-limited: must be reported as unverified, not broken.
+  "/img/busy.png": { status: 429, headers: { "retry-after": "0" }, body: "" },
   "/robots.txt": { headers: { "content-type": "text/plain" }, body: "User-agent: *\nDisallow: /cart\n" },
 };
 
 let server: Server;
+let flakyServed = 0;
 const nonGetRequests: string[] = [];
 let base: string;
 let browser: Browser;
@@ -43,6 +53,10 @@ beforeAll(async () => {
   server = createServer((req, res) => {
     const path = (req.url ?? "/").split("?")[0]!;
     if (req.method !== "GET" && req.method !== "HEAD") nonGetRequests.push(`${req.method} ${path}`);
+    if (path === "/flaky" && !flakyServed++) {
+      res.writeHead(429, { "retry-after": "0", "content-type": "text/html" }).end("slow down");
+      return;
+    }
     const page = PAGES[path];
     if (!page) {
       res.writeHead(404, { "content-type": "text/html" }).end("<h1>Not found</h1>");
@@ -73,12 +87,20 @@ describe("runSiteCheck against the fixture site", () => {
     const rules = new Set(result.findings.map((f) => f.rule));
 
     expect(result.platform).toBe("bigcommerce");
-    expect(result.pages.map((p) => new URL(p.url).pathname).sort()).toEqual(["/", "/category/tents/", "/missing", "/old", "/orbit-terrarium/", "/products/tent"].sort());
+    expect(result.pages.map((p) => new URL(p.url).pathname).sort()).toEqual(["/", "/category/tents/", "/flaky", "/members", "/missing", "/old", "/orbit-terrarium/", "/products/tent"].sort());
+    expect(result.pages.find((p) => p.url.endsWith("/flaky"))!.status).toBe(200); // retried after the 429
+    expect(rules).not.toContain("crawl.rate-limited");
+    // The challenge page is listed as blocked, reported once, and kept out of every other check.
+    expect(result.pages.find((p) => p.url.endsWith("/members"))).toMatchObject({ blocked: true });
+    expect(result.findings.filter((f) => f.rule === "crawl.bot-protection")).toHaveLength(1);
+    expect(result.findings.filter((f) => f.url.endsWith("/members") && f.rule !== "crawl.bot-protection")).toEqual([]);
     // /orbit-terrarium/ has a flat BigCommerce URL; the pack reads its Stencil page type.
     expect(result.templates).toMatchObject({ home: 1, pdp: 2, plp: 1 });
 
     expect(rules).toContain("crawl.status-404"); // /missing was crawled
     expect(rules).toContain("links.image-4xx"); // /img/missing.png
+    expect(rules).toContain("links.image-rate-limited"); // /img/busy.png: one info note
+    expect(result.findings.filter((f) => f.selector === `${base}/img/busy.png`)).toEqual([]);
     expect(rules).toContain("seo.noindex");
     expect(rules).toContain("seo.h1-multiple");
     expect(rules).toContain("seo.title-duplicate");
@@ -121,4 +143,71 @@ describe("runSiteCheck against the fixture site", () => {
     expect(result.perf[0]).toMatchObject({ engine: "browser", score: null, interaction: null, template: "home" });
     expect(result.perf[0]!.fcp).toBeGreaterThan(0);
   }, 60_000);
+});
+
+describe("crawl and link helpers", () => {
+  it("interleaves child sitemaps so one big sitemap cannot crowd out the others", () => {
+    expect(interleave([["p1", "p2", "p3", "p4"], ["c1"], ["b1", "b2"]], 5)).toEqual(["p1", "c1", "b1", "p2", "b2"]);
+  });
+  it("honours Retry-After and caps the wait", () => {
+    expect(retryDelayMs("2", 0)).toBe(2000);
+    expect(retryDelayMs("120", 0)).toBe(15_000);
+    expect(retryDelayMs(null, 0)).toBe(1000);
+    expect(retryDelayMs(null, 2)).toBe(4000);
+  });
+});
+
+describe("rate limiting", () => {
+  it("slows everyone down on 429 and trips after too many in a row", async () => {
+    let t = 0;
+    const l = new RateLimiter(150, 3, 60_000, () => t);
+    l.on429("2");
+    expect(l.delayMs).toBe(500);
+    expect(await l.wait().then(() => true)).toBe(true);
+    l.onOk();
+    expect(l.delayMs).toBe(400);
+    l.on429(null);
+    l.on429(null);
+    l.on429(null);
+    expect(l.tripped).toBe("rate-limited");
+    expect(await l.wait()).toBe(false);
+  });
+
+  it("stops at the time budget", async () => {
+    let t = 0;
+    const l = new RateLimiter(150, 8, 1_000, () => t);
+    expect(await l.wait()).toBe(true);
+    t = 2_000;
+    expect(await l.wait()).toBe(false);
+    expect(l.tripped).toBe("time-budget");
+  });
+
+  it("gives up quickly on a site that answers 429 to everything, marking links unverified", async () => {
+    let hits = 0;
+    const srv = createServer((_req, res) => {
+      hits++;
+      res.writeHead(429, { "retry-after": "0" }).end();
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const origin = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+    const urls = Array.from({ length: 60 }, (_, i) => `${origin}/p${i}`);
+    const started = Date.now();
+    const results = await checkUrls(urls, "test", { limiter: new RateLimiter(10, 8, 60_000) });
+    await new Promise((r) => srv.close(r));
+    expect(results).toHaveLength(60);
+    expect(results.every((r) => r.rateLimited)).toBe(true);
+    expect(hits).toBeLessThan(25); // tripped after 8 in a row (+ in-flight), not 60 x retries
+    expect(Date.now() - started).toBeLessThan(20_000);
+  }, 30_000);
+});
+
+describe("bot protection", () => {
+  it("treats Cloudflare's 403 challenge as unverified, not a broken link", async () => {
+    const srv = createServer((_req, res) => res.writeHead(403, { "cf-mitigated": "challenge" }).end());
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const origin = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+    const results = await checkUrls([`${origin}/a`, `${origin}/b`], "test", { limiter: new RateLimiter(5, 3, 30_000) });
+    await new Promise((r) => srv.close(r));
+    expect(results.every((r) => r.rateLimited)).toBe(true);
+  }, 30_000);
 });

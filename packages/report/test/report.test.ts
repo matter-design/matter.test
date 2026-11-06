@@ -65,6 +65,15 @@ describe("HTML", () => {
     expect(html).not.toContain("javascript:");
   });
 
+  it("explains a large gap between simulated and observed LCP instead of hiding it", () => {
+    const input = sampleInput();
+    input.perf = input.perf.map((p) => ({ ...p, lcp: 29_000, observedLcp: 2_000, transferBytes: 6_000_000 }));
+    const html = renderReportHtml(buildReport(input));
+    expect(html).toContain("About the main-content times");
+    expect(html).toContain("29.0 s simulated, 2.0 s observed");
+    expect(renderReportHtml(buildReport(sampleInput()))).not.toContain("About the main-content times");
+  });
+
   it("explains that performance is lab data and the click is not INP", () => {
     const html = renderReportHtml(buildReport(sampleInput()));
     expect(html).toContain("Chrome UX Report");

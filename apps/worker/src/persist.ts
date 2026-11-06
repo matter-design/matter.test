@@ -34,7 +34,7 @@ export async function persistSiteCheck(db: Db, runId: string, result: SiteCheckR
     const perfRows = result.perf.flatMap((m) =>
       (["lcp", "cls", "tbt", "fcp", "ttfb"] as const)
         .filter((k) => m[k] !== null)
-        .map((k) => ({ runId, category: "performance" as const, url: m.url, metric: k, value: { value: m[k], rating: rate(k, m[k]!), template: m.template, engine: m.engine }, pass: rate(k, m[k]!) === "good" })),
+        .map((k) => ({ runId, category: "performance" as const, url: m.url, metric: k, value: { value: m[k], rating: rate(k, m[k]!), template: m.template, engine: m.engine, ...(k === "lcp" && m.observedLcp ? { observed: m.observedLcp } : {}) }, pass: rate(k, m[k]!) === "good" })),
     );
     const weightRows = result.perf.map((m) => ({
       runId,

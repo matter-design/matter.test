@@ -2,6 +2,7 @@ import Link from "next/link";
 import { eq, sql } from "drizzle-orm";
 import { clients, findings, projects } from "@mattertest/db";
 import { db } from "@/lib/server";
+import { createProject } from "@/app/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -36,8 +37,37 @@ export default async function ProjectsPage() {
             <p style={{ margin: 0 }}><strong>{p.openFindings}</strong> open findings</p>
           </Link>
         ))}
-        {rows.length === 0 && <p className="muted">No projects yet. Run <code>pnpm db:seed</code> to add a sample.</p>}
+        {rows.length === 0 && <p className="muted">No projects yet. Add one below.</p>}
       </div>
+
+      <section className="card">
+        <h2>New project</h2>
+        <p className="muted">The platform (Shopify, BigCommerce, WordPress…) is detected on the first check.</p>
+        <form action={createProject} className="form-grid">
+          <label>
+            <span>Client</span>
+            <input name="client" required className="input" placeholder="Debras" list="clients" />
+            <datalist id="clients">{[...new Set(rows.map((r) => r.client))].map((c) => <option key={c} value={c} />)}</datalist>
+          </label>
+          <label>
+            <span>Project</span>
+            <input name="name" required className="input" placeholder="Debras website" />
+          </label>
+          <label>
+            <span>Site address</span>
+            <input name="baseUrl" type="url" required className="input" placeholder="https://www.debras.com.au/" />
+          </label>
+          <label>
+            <span>Environment</span>
+            <select name="environment" className="input" defaultValue="production">
+              <option value="production">production</option>
+              <option value="staging">staging</option>
+              <option value="uat">uat</option>
+            </select>
+          </label>
+          <div><button type="submit" className="btn">Add project</button></div>
+        </form>
+      </section>
     </>
   );
 }

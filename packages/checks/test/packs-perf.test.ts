@@ -97,6 +97,9 @@ describe("performance thresholds", () => {
       ["perf.heavy-image", "low"],
     ]);
     expect(f[0]!.detail).toContain("img.hero");
+    const withObserved = perfFindings({ ...base, engine: "lighthouse", lcp: 29_000, observedLcp: 2_000, requests: 552, transferBytes: 6_000_000 });
+    expect(withObserved[0]!.detail).toContain("Observed without throttling: 2.00 s");
+    expect(withObserved[0]!.detail).toContain("552 requests and 6.0 MB");
     expect(f[0]!.evidence).toMatchObject({ lab: true });
   });
 
@@ -122,11 +125,12 @@ describe("Lighthouse result mapping", () => {
         "total-byte-weight": { title: "Weight", score: 1, numericValue: 1_800_000 },
         "resource-summary": { title: "Resources", score: null, details: { items: [{ resourceType: "script", transferSize: 600_000 }, { resourceType: "image", transferSize: 900_000 }] } },
         "network-requests": { title: "Requests", score: null, details: { items: [{ url: "https://shop.test/", resourceType: "Document", transferSize: 30_000 }, { url: "https://shop.test/hero.jpg", resourceType: "Image", transferSize: 700_000 }] } },
+        metrics: { title: "Metrics", score: null, details: { items: [{ observedLargestContentfulPaint: 1987.4 }] } },
         "lcp-breakdown-insight": { title: "LCP breakdown", score: 0, details: { type: "list", items: [{ type: "node", selector: "div.hero > img", snippet: "<img>" }] } },
         "render-blocking-insight": { title: "Render blocking requests", score: 0, displayValue: "Est savings of 600 ms", details: { items: [{ url: "https://shop.test/theme.css" }] } },
       },
     });
-    expect(m).toMatchObject({ engine: "lighthouse", score: 73, lcp: 3820, cls: 0.043, tbt: 310, ttfb: 220, transferBytes: 1_800_000, jsBytes: 600_000, imageBytes: 900_000, requests: 2, lcpElement: "div.hero > img", renderBlocking: ["https://shop.test/theme.css"] });
+    expect(m).toMatchObject({ engine: "lighthouse", score: 73, lcp: 3820, observedLcp: 1987, cls: 0.043, tbt: 310, ttfb: 220, transferBytes: 1_800_000, jsBytes: 600_000, imageBytes: 900_000, requests: 2, lcpElement: "div.hero > img", renderBlocking: ["https://shop.test/theme.css"] });
     expect(m.heavyImages).toEqual([{ url: "https://shop.test/hero.jpg", bytes: 700_000 }]);
     expect(m.insights.map((i) => i.id)).toEqual(["lcp-breakdown-insight", "render-blocking-insight"]);
   });

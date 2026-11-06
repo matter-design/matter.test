@@ -43,6 +43,17 @@ function issueTable(groups: IssueGroup[]): string {
   </tbody></table>`;
 }
 
+/**
+ * When the simulated slow-phone LCP is far above what was actually observed, say so plainly:
+ * the gap comes from page weight and request count, and real phones land in between.
+ */
+function simulationGap(rows: ReportPerf[]): string {
+  const gaps = rows.filter((r) => r.lcp && r.observedLcp && r.lcp / r.observedLcp >= 4);
+  if (!gaps.length) return "";
+  const worst = gaps.reduce((a, b) => (b.lcp! / b.observedLcp! > a.lcp! / a.observedLcp! ? b : a));
+  return `<p class="note"><b>About the main-content times.</b> Lighthouse simulates a mid-range phone on slow 4G. On ${gaps.length === rows.length ? "every page" : `${gaps.length} of ${rows.length} pages`} that estimate is far above what we observed on a fast connection (for example ${esc(templateLabel(worst.template))}: ${(worst.lcp! / 1000).toFixed(1)} s simulated, ${(worst.observedLcp! / 1000).toFixed(1)} s observed). The gap comes from how much each page downloads${worst.transferBytes ? ` (${(worst.transferBytes / 1e6).toFixed(1)} MB here)` : ""}: shoppers on phones see something in between, and reducing page weight closes it.</p>`;
+}
+
 function perfSection(m: ReportModel): string {
   const rows = m.perfByTemplate;
   if (!rows.length) return "";
@@ -60,6 +71,7 @@ function perfSection(m: ReportModel): string {
     <table class="perf"><thead><tr><th>Page type</th><th class="num">Score</th><th class="num" title="Largest Contentful Paint">Main content<br><span class="muted small">LCP</span></th><th class="num">Layout shift<br><span class="muted small">CLS</span></th><th class="num">Busy time<br><span class="muted small">TBT</span></th>${anyInteraction ? `<th class="num">Tap response<br><span class="muted small">lab</span></th>` : ""}</tr></thead><tbody>
     ${rows.map((r: ReportPerf & { pageLabel: string }) => `<tr><td><b>${esc(templateLabel(r.template))}</b><div class="muted small url">${esc(r.pageLabel)}</div></td>${scoreCell(r.score)}${metricCell("lcp", r.lcp)}${metricCell("cls", r.cls)}${metricCell("tbt", r.tbt)}${anyInteraction ? metricCell("interaction", r.interaction?.latency) : ""}</tr>`).join("")}
     </tbody></table>
+    ${simulationGap(rows)}
     <p class="legend"><span class="rt rt-good">Good</span> <span class="rt rt-needs-improvement">Needs improvement</span> <span class="rt rt-poor">Poor</span></p>
     ${insights ? `<h3>Biggest opportunities</h3><ul class="insights">${insights}</ul>` : ""}
     ${perfGroups.length ? `<h3>Speed issues</h3>${issueTable(perfGroups)}` : ""}
@@ -86,6 +98,7 @@ const VIEWPORT_NAME: Record<string, string> = { mobile: "Phone", tablet: "Tablet
 function matrixCell(c: import("./visual").ReportCapture | undefined): string {
   if (!c) return `<td class="mx muted">–</td>`;
   if (c.status === "error") return `<td class="mx"><span class="mxb bad">Failed</span></td>`;
+  if (c.status === "blocked") return `<td class="mx"><span class="mxb new">Not checked</span></td>`;
   const issues: [string, string][] = [];
   if (c.jsErrors.length) issues.push(["bad", "JS error"]);
   if (c.overflowPx > 1) issues.push(["bad", "Scrolls sideways"]);

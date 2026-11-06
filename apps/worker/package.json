@@ -9,7 +9,8 @@
     "check": "tsx --env-file-if-exists=../../.env src/cli.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "report": "tsx --env-file-if-exists=../../.env src/report-cli.ts"
+    "report": "tsx --env-file-if-exists=../../.env src/report-cli.ts",
+    "import-run": "tsx --env-file-if-exists=../../.env src/import-cli.ts"
   },
   "dependencies": {
     "@mattertest/checks": "workspace:*",
