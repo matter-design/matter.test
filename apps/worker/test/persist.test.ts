@@ -17,6 +17,9 @@ const result = (titles: string[]): SiteCheckResult => ({
   platformEvidence: ["html:cdn"],
   pages: [{ url: "https://shop.test/", status: 200, headers: {}, depth: 0, links: [], images: [] }],
   templates: { home: 1 },
+  perf: [
+    { url: "https://shop.test/", template: "home", engine: "lighthouse", score: 62, insights: [{ id: "render-blocking-insight", title: "Render blocking requests" }], interaction: { target: "button[aria-expanded] → button Menu", latency: 240 }, ttfb: 120, fcp: 900, lcp: 3100, lcpElement: "img.hero", cls: 0.02, tbt: 150, load: 2000, requests: 40, transferBytes: 900_000, jsBytes: 300_000, imageBytes: 400_000, renderBlocking: [], heavyImages: [] },
+  ],
   findings: titles.map((t) => ({ category: "seo", rule: `seo.${t}`, severity: "medium", title: t, url: "https://shop.test/" })),
 });
 

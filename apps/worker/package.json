@@ -8,12 +8,14 @@
     "start": "tsx --env-file-if-exists=../../.env src/index.ts",
     "check": "tsx --env-file-if-exists=../../.env src/cli.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "report": "tsx --env-file-if-exists=../../.env src/report-cli.ts"
   },
   "dependencies": {
     "@mattertest/checks": "workspace:*",
     "@mattertest/core": "workspace:*",
     "@mattertest/db": "workspace:*",
+    "@mattertest/report": "workspace:*",
     "bullmq": "^6.7.1",
     "drizzle-orm": "^0.45.4",
     "ioredis": "^6.0.0",

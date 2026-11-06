@@ -17,15 +17,18 @@ Architecture and roadmap: see the *Agentic Test Management Tool — Architecture
 | Security hygiene (passive): HTTPS, HSTS, CSP, nosniff, framing, cookie flags, exposed files | Done |
 | Accessibility: axe-core at WCAG 2.2 AA, sampled per template | Done |
 | Platform detection: BigCommerce, Shopify, WordPress, Laravel, Next.js | Done |
+| Performance: Lighthouse per template (PSI mobile/desktop profiles), score, LCP/CLS/TBT/FCP/TTFB, insights, weight budgets, scripted lab interaction (INP stand-in), in-browser fallback | Done |
+| BigCommerce pack: Stencil page-type templates, `[Sample]` catalogue, store-domain canonicals/links, maintenance mode, unbuyable or $0.00 PDPs, missing Product schema, indexable facet/cart URLs, robots.txt | Done |
 | Findings deduped across runs by fingerprint; reopened if they come back | Done |
 | Web app: project list, project page, start a check, runs, open findings | Done (basic) |
-| Performance (Lighthouse / web-vitals), visual + cross-browser, platform packs, reports | Next |
+| Client PDF report: summary, "fix these first", speed per page type, accessibility by WCAG criterion, platform/SEO/links/security, appendix; plain-English why/fix per issue; client branding | Done |
+| Visual + cross-browser, Shopify / WordPress / Laravel / Next.js packs | Next |
 | Doc ingestion → plan / scenarios / cases (Claude Agent SDK) | Phase 3 |
 | Self-healing sanity runner | Phase 4 |
 
 ## Run it locally
 
-Needs Node 22+, pnpm 10, Docker.
+Needs Node 22.19+ (Lighthouse 13), pnpm 10, Docker.
 
 ```bash
 cp .env.example .env
@@ -44,9 +47,35 @@ Open the sample project, change its environment URL in the DB to a site you are 
 ```bash
 pnpm check https://shop.example.com --max 50
 pnpm check https://shop.example.com --only seo,links,security
+pnpm check https://shop.example.com --only performance,platform --no-throttle
 ```
 
-Writes a JSON report to `./artefacts/`.
+Performance runs **Lighthouse** (pinned 13.5.0) on one sample page per template, configured like PageSpeed Insights: `mobile` by default, `--desktop` for the desktop profile, `--no-throttle` for fast local runs. It reports the performance score, LCP (with the LCP element), CLS, TBT, FCP, server response time, page/JS/image weight and the failing Lighthouse insights. Lighthouse uses Playwright's Chromium (override with `LIGHTHOUSE_CHROME_PATH`). If it can't start or fails on a page, that page is measured in the browser instead (`--no-lighthouse` forces this).
+
+INP needs real users, so each sampled page also gets one **scripted lab interaction**: a menu toggle, accordion, gallery thumbnail or variant swatch, timed with the Event Timing API against INP thresholds. It never clicks add-to-cart or anything in a POST form, and every non-GET request and page navigation after load is aborted, so it can't change the store's state. Findings call it a lab interaction, not INP.
+
+All of these are lab numbers from a single load. They are a regression signal, not the field data (CrUX) Google grades against. Metrics are stored per URL in `check_results` (category `performance`) so they can be trended across runs.
+
+### Client report
+
+`packages/report` turns a site-check result into an A4 PDF for the client, printed with Playwright's Chromium:
+
+- Cover, summary (counts by severity and area, headline), then "Fix these first": the critical and high issues, each with why it matters and what to do.
+- Speed by page type (Lighthouse score, LCP, CLS, TBT, tap response) with Google's colour bands and the biggest Lighthouse opportunities.
+- Accessibility grouped by WCAG 2.2 criterion, then platform, SEO, links, failed pages and security.
+- An appendix listing every affected URL per issue.
+
+Repeated issues are grouped by rule, so 200 pages missing OG tags is one line, not 200. Wording lives in `src/copy.ts`; add an entry there when a new rule should read better for clients. Client branding (`clients.branding`: `primary`, `accent` hex colours and an https `logoUrl`) is applied; anything else is ignored.
+
+In the web app, the latest finished site check on a project has a **Client PDF** link (`/runs/<id>/report`). Older runs are refused because findings only remember the last run they were seen in. Ignored and accepted-risk findings are left out. `pnpm --filter @mattertest/report sample` renders a sample report for design review.
+
+Platform packs live in `packages/checks/src/packs/` and run when the detected platform has one (category `platform`, rules prefixed `bc.` for BigCommerce). A pack can also name page templates from markup, which beats URL guessing on flat BigCommerce URLs.
+
+Writes a JSON result to `./artefacts/`. Add `--pdf --client "Northwind Outdoor" --project "Store launch"` for the client PDF next to it, or render one later from a saved result:
+
+```bash
+pnpm report ./artefacts/shop.example.com-2026-11-06T03-00-00-000Z.json --client "Northwind Outdoor" --project "Store launch"
+```
 
 ## Layout
 
@@ -57,7 +86,9 @@ apps/
 packages/
   core/       shared enums, Zod schemas, finding fingerprint
   db/         Drizzle schema, migrations, seed
-  checks/     deterministic check engine (Playwright, axe-core, cheerio)
+  checks/     deterministic check engine (Playwright, axe-core, cheerio, Lighthouse)
+    src/packs/  platform packs (BigCommerce today)
+  report/     client PDF report (HTML template printed with Chromium)
 ```
 
 Internal packages are source-only TypeScript (no build step): the worker runs on `tsx`, the web app transpiles them.

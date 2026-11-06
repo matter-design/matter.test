@@ -87,6 +87,24 @@ export const SiteCheckJob = z.object({
 });
 export type SiteCheckJob = z.infer<typeof SiteCheckJob>;
 
+/** Google's published Core Web Vitals thresholds (good / poor). TBT and TTFB use Lighthouse / web.dev guidance. */
+export const PERF_THRESHOLDS = {
+  lcp: { good: 2500, poor: 4000, unit: "ms" },
+  cls: { good: 0.1, poor: 0.25, unit: "" },
+  tbt: { good: 200, poor: 600, unit: "ms" },
+  fcp: { good: 1800, poor: 3000, unit: "ms" },
+  ttfb: { good: 800, poor: 1800, unit: "ms" },
+  /** INP thresholds, applied to the scripted lab interaction. */
+  interaction: { good: 200, poor: 500, unit: "ms" },
+} as const;
+export type PerfMetricName = keyof typeof PERF_THRESHOLDS;
+
+export type Rating = "good" | "needs-improvement" | "poor";
+export function rate(metric: PerfMetricName, value: number): Rating {
+  const t = PERF_THRESHOLDS[metric];
+  return value <= t.good ? "good" : value <= t.poor ? "needs-improvement" : "poor";
+}
+
 export const QUEUES = {
   siteCheck: "site-check",
   sanity: "sanity",
