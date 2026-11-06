@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { chromium } from "playwright";
 import { buildReport, renderReportPdf } from "@mattertest/report";
+import { currentUser } from "@/lib/auth";
 import { loadReportInput } from "@/lib/report";
 
 export const dynamic = "force-dynamic";
@@ -8,6 +9,7 @@ export const runtime = "nodejs";
 
 /** GET /runs/:id/report → client PDF for a finished site-check run. */
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  if (!(await currentUser())) return new Response("Sign in required", { status: 401 });
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) return new Response("Not found", { status: 404 });
 

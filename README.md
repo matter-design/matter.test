@@ -20,7 +20,8 @@ Architecture and roadmap: see the *Agentic Test Management Tool — Architecture
 | Performance: Lighthouse per template (PSI mobile/desktop profiles), score, LCP/CLS/TBT/FCP/TTFB, insights, weight budgets, scripted lab interaction (INP stand-in), in-browser fallback | Done |
 | BigCommerce pack: Stencil page-type templates, `[Sample]` catalogue, store-domain canonicals/links, maintenance mode, unbuyable or $0.00 PDPs, missing Product schema, indexable facet/cart URLs, robots.txt | Done |
 | Findings deduped across runs by fingerprint; reopened if they come back | Done |
-| Web app: project list, project page, start a check, runs, open findings | Done (basic) |
+| Web app: project list, add project, project page, start a check, runs, open findings | Done (basic) |
+| Sign-in: Google, limited to the company Workspace domain; every page, action, report and screenshot protected; who started checks and approved baselines is recorded | Done |
 | Client PDF report: summary, "fix these first", speed per page type, accessibility by WCAG criterion, platform/SEO/links/security, appendix; plain-English why/fix per issue; client branding | Done |
 | Visual + cross-browser: Chromium, Firefox and WebKit at phone/tablet/desktop; screenshot diffs against approved baselines; sideways scroll, browser-specific JS errors and images, missing viewport tag; approve changes in the web app; grid and before/after in the report | Done |
 | Shopify pack: templates from markup, password page, myshopify.com canonicals/links, theme placeholder text, unbuyable or $0 products, missing Product schema, duplicate collection product URLs, indexable filter/cart URLs, robots.txt defaults, app script load | Done |
@@ -43,7 +44,18 @@ pnpm worker            # terminal 1: site-check worker
 pnpm web               # terminal 2: http://localhost:3000
 ```
 
-Open the sample project, change its environment URL in the DB to a site you are allowed to crawl, and press **Start check**.
+Sign in with your company Google account (see **Sign-in** below), add a project with **New project** (client, project name, site address), and press **Start check**.
+
+### Sign-in
+
+The web app only admits Google accounts in the company Workspace (`AUTH_ALLOWED_DOMAIN`, default `matterdesign.com.au`): the email must be verified and the account must belong to the Workspace, so a personal Gmail registered with a company address is refused. Sessions are a signed cookie valid for 12 hours.
+
+1. In Google Cloud Console, create an OAuth client of type *Web application* with redirect URI `http://localhost:3000/auth/google/callback` (and the production URL later).
+2. Put `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and a random `AUTH_SECRET` (`openssl rand -base64 48`) in `apps/web/.env.local`, with `APP_URL` set to the app's address.
+
+For local work without Google, `AUTH_DISABLED=1` in `apps/web/.env.local` skips sign-in. It is ignored in production.
+
+Every page goes through the proxy (`src/proxy.ts`); server actions, the report download and the screenshot route also check the session themselves.
 
 ### Quick check from the terminal (no DB, no Redis)
 
