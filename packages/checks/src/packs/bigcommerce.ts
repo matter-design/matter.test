@@ -1,6 +1,7 @@
 import * as cheerio from "cheerio";
 import type { FindingInput } from "@mattertest/core";
 import type { PackContext, PackPage, PlatformPack } from "./types";
+import { hasProductSchema, robotsDisallows, robotsMeta, tempDomainFindings } from "./util";
 
 /**
  * BigCommerce (Stencil) pack.
@@ -51,46 +52,12 @@ const OUT_OF_STOCK = /out of stock|sold out|currently unavailable/i;
 const PRICE_SELECTORS = "[data-product-price-without-tax], [data-product-price-with-tax], .productView-price .price--withoutTax, .productView-price .price--withTax";
 const ADD_TO_CART = "form[data-cart-item-add], [data-button-type='add-cart'], #form-action-addToCart";
 
-function hostOf(href: string | undefined, base: string): string | undefined {
-  if (!href) return undefined;
-  try {
-    return new URL(href, base).host;
-  } catch {
-    return undefined;
-  }
-}
-
-function hasProductSchema($: cheerio.CheerioAPI): boolean {
-  if ($('[itemtype*="schema.org/Product" i]').length) return true;
-  let found = false;
-  $('script[type="application/ld+json"]').each((_, el) => {
-    if (found) return;
-    try {
-      const walk = (v: unknown): boolean => {
-        if (Array.isArray(v)) return v.some(walk);
-        if (v && typeof v === "object") {
-          const o = v as Record<string, unknown>;
-          const t = o["@type"];
-          if (t === "Product" || (Array.isArray(t) && t.includes("Product"))) return true;
-          return walk(o["@graph"]);
-        }
-        return false;
-      };
-      found = walk(JSON.parse($(el).text()));
-    } catch {
-      /* invalid JSON-LD is reported by the SEO checks */
-    }
-  });
-  return found;
-}
-
 function pageFindings(p: PackPage, ctx: PackContext): FindingInput[] {
   if (!p.html || (p.status ?? 0) >= 400) return [];
   const $ = cheerio.load(p.html);
   const out: FindingInput[] = [];
   const add = (f: Omit<FindingInput, "category" | "url"> & { url?: string }) => out.push({ category: "platform", url: p.url, ...f });
   const siteHost = new URL(ctx.baseUrl).host;
-  const onStoreDomain = STORE_DOMAIN.test(siteHost);
 
   // Sample catalogue still live: BigCommerce's demo products are prefixed "[Sample]".
   const sampleNames = new Set<string>();
@@ -101,23 +68,8 @@ function pageFindings(p: PackPage, ctx: PackContext): FindingInput[] {
   if (sampleNames.size)
     add({ rule: "bc.sample-products", severity: "high", title: `Sample catalogue visible (${sampleNames.size} "[Sample]" item${sampleNames.size > 1 ? "s" : ""})`, detail: "BigCommerce demo products are still live. Delete or hide them before launch.", evidence: { names: [...sampleNames].slice(0, 20) } });
 
-  // Canonical / og:url pointing at the *.mybigcommerce.com store domain instead of the live domain.
-  if (!onStoreDomain) {
-    for (const [sel, attr, label] of [['link[rel="canonical"]', "href", "Canonical"], ['meta[property="og:url"]', "content", "og:url"]] as const) {
-      const v = $(sel).attr(attr);
-      const h = hostOf(v, p.url);
-      if (h && STORE_DOMAIN.test(h))
-        add({ rule: "bc.store-domain-canonical", severity: "high", title: `${label} points at the store domain ${h}`, detail: `Set the primary domain in BigCommerce so ${label} uses ${siteHost}.`, selector: sel, evidence: { value: v } });
-    }
-    const storeLinks = new Set<string>();
-    $("a[href], img[src], form[action]").each((_, el) => {
-      const v = $(el).attr("href") ?? $(el).attr("src") ?? $(el).attr("action");
-      const h = hostOf(v, p.url);
-      if (h && STORE_DOMAIN.test(h)) storeLinks.add(v!);
-    });
-    if (storeLinks.size)
-      add({ rule: "bc.store-domain-links", severity: "medium", title: `${storeLinks.size} link${storeLinks.size > 1 ? "s" : ""} to the *.mybigcommerce.com store domain`, detail: "Hard-coded links to the store domain, usually from theme content or menus copied before go-live.", evidence: { links: [...storeLinks].slice(0, 20) } });
-  }
+  // Canonical / og:url / links pointing at the *.mybigcommerce.com store domain instead of the live domain.
+  out.push(...tempDomainFindings($, p.url, siteHost, { domain: STORE_DOMAIN, domainLabel: "*.mybigcommerce.com", canonicalRule: "bc.store-domain-canonical", linksRule: "bc.store-domain-links", canonicalFix: "Set the primary domain in BigCommerce" }));
 
   // Maintenance / closed store page.
   const bodyText = $("body").text().replace(/\s+/g, " ");
@@ -143,7 +95,7 @@ function pageFindings(p: PackPage, ctx: PackContext): FindingInput[] {
   // Facet / sort URLs that are crawlable and indexable create duplicate content.
   const u = new URL(p.url);
   if (["plp", "search"].includes(p.template) && [...u.searchParams.keys()].some((k) => /^(_bc_fsnf|sort|limit|mode|page)$/.test(k) || k.includes("["))) {
-    const robots = $('meta[name="robots"]').attr("content")?.toLowerCase() ?? "";
+    const robots = robotsMeta($);
     const canonical = $('link[rel="canonical"]').attr("href");
     const canonicalClean = canonical ? !new URL(canonical, p.url).search : false;
     if (!robots.includes("noindex") && !canonicalClean)
@@ -164,7 +116,7 @@ function siteFindings(pages: PackPage[], ctx: PackContext): FindingInput[] {
   else {
     if (!/^\s*sitemap\s*:/im.test(ctx.robotsTxt))
       out.push({ category: "platform", rule: "bc.robots-no-sitemap", severity: "low", title: "robots.txt does not list a sitemap", detail: "BigCommerce's default lists /xmlsitemap.php. Add it back so crawlers find the catalogue.", url: robotsUrl });
-    const missing = ["/cart.php", "/checkout"].filter((path) => !new RegExp(`^\\s*disallow\\s*:\\s*${path.replace(".", "\\.")}`, "im").test(ctx.robotsTxt!));
+    const missing = ["/cart.php", "/checkout"].filter((path) => !robotsDisallows(ctx.robotsTxt!, path));
     if (missing.length)
       out.push({ category: "platform", rule: "bc.robots-transactional-allowed", severity: "low", title: `robots.txt does not disallow ${missing.join(", ")}`, detail: "The BigCommerce default disallows cart and checkout. It looks customised.", url: robotsUrl, evidence: { missing } });
   }
