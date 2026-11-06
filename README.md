@@ -22,13 +22,14 @@ Architecture and roadmap: see the *Agentic Test Management Tool — Architecture
 | Findings deduped across runs by fingerprint; reopened if they come back | Done |
 | Web app: project list, project page, start a check, runs, open findings | Done (basic) |
 | Client PDF report: summary, "fix these first", speed per page type, accessibility by WCAG criterion, platform/SEO/links/security, appendix; plain-English why/fix per issue; client branding | Done |
-| Visual + cross-browser, Shopify / WordPress / Laravel / Next.js packs | Next |
+| Visual + cross-browser: Chromium, Firefox and WebKit at phone/tablet/desktop; screenshot diffs against approved baselines; sideways scroll, browser-specific JS errors and images, missing viewport tag; approve changes in the web app; grid and before/after in the report | Done |
+| Shopify / WordPress / Laravel / Next.js packs | Next |
 | Doc ingestion → plan / scenarios / cases (Claude Agent SDK) | Phase 3 |
 | Self-healing sanity runner | Phase 4 |
 
 ## Run it locally
 
-Needs Node 22.19+ (Lighthouse 13), pnpm 10, Docker.
+Needs Node 22.19+ (Lighthouse 13), pnpm 10, Docker, and Playwright's browsers (`pnpm --filter @mattertest/checks exec playwright install chromium firefox webkit`).
 
 ```bash
 cp .env.example .env
@@ -56,13 +57,30 @@ INP needs real users, so each sampled page also gets one **scripted lab interact
 
 All of these are lab numbers from a single load. They are a regression signal, not the field data (CrUX) Google grades against. Metrics are stored per URL in `check_results` (category `performance`) so they can be trended across runs.
 
+### Visual and cross-browser checks
+
+One page per template is opened in Chromium, Firefox and WebKit (Safari's engine) at phone (390), tablet (820) and desktop (1440) widths. Each capture is:
+
+- **Compared with its approved baseline.** The first run stores baselines; later runs flag pages where more than 0.2% of pixels changed or the height moved. Animations are disabled, lazy images are loaded first, and carousels, iframes, videos and chat widgets are masked so they don't cause false changes. Add `data-mt-mask` to anything else that changes on every load.
+- **Checked for problems that need no baseline:** sideways scrolling (with the widest element), JS errors (flagged high when only some browsers hit them), images that load in some browsers but not others, and a missing viewport tag.
+
+In the web app, a visual change shows approved / now / diff thumbnails and an **Approve change** button, which makes the new screenshot the baseline (older baselines are kept as history). From the CLI, `--update-baselines` accepts everything; `--browsers` and `--viewports` narrow the matrix:
+
+```bash
+pnpm check https://shop.example.com --only crawl,visual --browsers chromium,webkit --viewports mobile,desktop
+```
+
+Screenshots live under `artefacts/visual/` (or `ARTEFACT_DIR`), which the CLI, worker and web app share.
+
 ### Client report
 
 `packages/report` turns a site-check result into an A4 PDF for the client, printed with Playwright's Chromium:
 
 - Cover, summary (counts by severity and area, headline), then "Fix these first": the critical and high issues, each with why it matters and what to do.
 - Speed by page type (Lighthouse score, LCP, CLS, TBT, tap response) with Google's colour bands and the biggest Lighthouse opportunities.
-- Accessibility grouped by WCAG 2.2 criterion, then platform, SEO, links, failed pages and security.
+- Accessibility grouped by WCAG 2.2 criterion.
+- Browsers and devices: a page-type × browser × device grid, and before/after crops of the biggest visual changes.
+- Platform, SEO, links, failed pages and security.
 - An appendix listing every affected URL per issue.
 
 Repeated issues are grouped by rule, so 200 pages missing OG tags is one line, not 200. Wording lives in `src/copy.ts`; add an entry there when a new rule should read better for clients. Client branding (`clients.branding`: `primary`, `accent` hex colours and an https `logoUrl`) is applied; anything else is ignored.

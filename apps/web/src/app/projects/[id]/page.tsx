@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { desc, eq, inArray, sql } from "drizzle-orm";
 import { environments, findings, projects, runs, tasks } from "@mattertest/db";
 import { db } from "@/lib/server";
-import { startSiteCheck } from "@/app/actions";
+import { acceptVisualChange, startSiteCheck } from "@/app/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -84,6 +84,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
                   <td>
                     <strong>{f.title}</strong>
                     <div className="muted">{f.url}{f.wcag ? ` · WCAG ${f.wcag}` : ""}</div>
+                    {f.rule === "visual.changed" && <VisualChange findingId={f.id} evidence={f.evidence} />}
                   </td>
                   <td className="muted">{f.category}</td>
                   <td className="muted">{f.occurrences}×</td>
@@ -95,5 +96,29 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
         </div>
       </section>
     </>
+  );
+}
+
+/** Before / now / diff thumbnails for a visual change, with an approve button. */
+function VisualChange({ findingId, evidence }: { findingId: string; evidence: Record<string, unknown> | null }) {
+  const ev = (evidence ?? {}) as { baselineUri?: string; currentUri?: string; diffUri?: string };
+  const img = (uri: string | undefined, label: string) =>
+    uri ? (
+      <a href={`/artefacts/${uri}`} target="_blank" rel="noreferrer" className="shot">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={`/artefacts/${uri}`} alt={label} loading="lazy" />
+        <span>{label}</span>
+      </a>
+    ) : null;
+  return (
+    <div className="visual-change">
+      <div className="shots">{img(ev.baselineUri, "Approved")}{img(ev.currentUri, "Now")}{img(ev.diffUri, "Diff")}</div>
+      {ev.currentUri && (
+        <form action={acceptVisualChange}>
+          <input type="hidden" name="findingId" value={findingId} />
+          <button type="submit" className="btn btn-secondary">Approve change</button>
+        </form>
+      )}
+    </div>
   );
 }

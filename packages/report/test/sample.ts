@@ -22,6 +22,9 @@ export function sampleInput(): ReportInput {
   add({ category: "accessibility", rule: "axe.color-contrast", severity: "high", title: "Elements must meet minimum color contrast ratio thresholds", url: "/", wcag: "1.4.3", selector: ".footer-info-heading" });
   add({ category: "accessibility", rule: "axe.image-alt", severity: "critical", title: "Images must have alternative text", url: "/trail-tent/", wcag: "1.1.1", selector: "img.productView-image--default" });
   add({ category: "accessibility", rule: "axe.link-name", severity: "high", title: "Links must have discernible text", url: "/", wcag: "2.4.4", selector: "a.footer-social-link" });
+  add({ category: "visual", rule: "visual.js-error-browser-specific", severity: "high", title: "JavaScript error only in Safari", url: "/trail-tent/", selector: "TypeError: undefined is not an object", detail: "TypeError: undefined is not an object (evaluating 'a.swatch')" });
+  add({ category: "visual", rule: "visual.horizontal-overflow", severity: "medium", title: "Page scrolls sideways on mobile (42 px too wide)", url: "/tents/", selector: "mobile" });
+  for (const b of ["chromium", "firefox", "webkit"]) add({ category: "visual", rule: "visual.changed", severity: "medium", title: `Page looks different from the approved version (8.4% changed, ${b} desktop)`, url: "/", selector: `${b}/desktop` });
   add({ category: "performance", rule: "perf.lighthouse-score-poor", severity: "high", title: "Lighthouse performance score 38", url: "/trail-tent/" });
   add({ category: "performance", rule: "perf.lcp-poor", severity: "high", title: "Largest Contentful Paint poor: 5.40 s", url: "/trail-tent/" });
   add({ category: "performance", rule: "perf.lcp-needs-improvement", severity: "medium", title: "Largest Contentful Paint needs improvement: 3.10 s", url: "/" });
@@ -36,7 +39,7 @@ export function sampleInput(): ReportInput {
     platform: "bigcommerce",
     pagesChecked: 184,
     templates: { pdp: 120, plp: 38, blog: 14, landing: 9, home: 1, search: 1, cart: 1 },
-    categoriesRun: ["crawl", "links", "seo", "security", "accessibility", "performance", "platform"],
+    categoriesRun: ["crawl", "links", "seo", "security", "accessibility", "performance", "platform", "visual"],
     perfProfile: "mobile",
     possiblyFixed: 4,
     perf: [
@@ -45,6 +48,25 @@ export function sampleInput(): ReportInput {
       { url: base + "/tents/", template: "plp", engine: "lighthouse", score: 72, lcp: 2400, cls: 0.05, tbt: 260, fcp: 1300, ttfb: 380, interaction: { target: "[data-facet-toggle] → button Brand", latency: 280 } },
       { url: base + "/blog/winter-camping/", template: "blog", engine: "lighthouse", score: 94, lcp: 1900, cls: 0, tbt: 40, fcp: 1100, ttfb: 300, interaction: null },
     ],
+    visual: {
+      browsers: ["chromium", "firefox", "webkit"],
+      viewports: ["mobile", "tablet", "desktop"],
+      captures: (["/", "/tents/", "/trail-tent/"] as const).flatMap((path, i) =>
+        (["chromium", "firefox", "webkit"] as const).flatMap((browser) =>
+          (["mobile", "tablet", "desktop"] as const).map((viewport) => ({
+            url: base + path,
+            template: ["home", "plp", "pdp"][i]!,
+            browser,
+            viewport,
+            status: path === "/" && viewport === "desktop" ? ("changed" as const) : ("match" as const),
+            diffRatio: path === "/" && viewport === "desktop" ? 0.084 : 0,
+            overflowPx: path === "/tents/" && viewport === "mobile" ? 42 : 0,
+            jsErrors: path === "/trail-tent/" && browser === "webkit" ? ["TypeError: undefined is not an object (evaluating 'a.swatch')"] : [],
+            brokenImages: [],
+          })),
+        ),
+      ),
+    },
     findings: f,
   };
 }

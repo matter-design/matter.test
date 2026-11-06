@@ -19,6 +19,7 @@ export const CATEGORY_COPY: Partial<Record<CheckCategory, { label: string; intro
   accessibility: { label: "Accessibility", intro: "Automated checks against WCAG 2.2 Level AA, the standard Australian and most international accessibility law points to." },
   security: { label: "Security basics", intro: "Passive checks of the protections a browser receives from the site. We did not attempt to break in." },
   platform: { label: "Platform", intro: "Checks specific to the store platform: catalogue, domain and setup mistakes we commonly see at launch." },
+  visual: { label: "Browsers and devices", intro: "Key pages opened in Chrome, Firefox and Safari on a phone, tablet and desktop screen, compared with the last approved look and checked for problems that only show up in one browser." },
 };
 
 const RULES: Record<string, RuleCopy> = {
@@ -76,6 +77,14 @@ const RULES: Record<string, RuleCopy> = {
   "security.cookie-not-httponly": { label: "Session cookies readable by scripts", why: "A malicious script could steal a visitor's session.", fix: "Set the HttpOnly flag on session cookies." },
   "security.cookie-samesite-none-insecure": { label: "Cross-site cookies without Secure", why: "Browsers reject or mishandle these cookies.", fix: "Add Secure to cookies that use SameSite=None." },
   "security.exposed-file": { label: "Private files publicly readable", why: "These files can contain passwords or source code.", fix: "Block or remove them from the web server immediately and rotate any secrets they contain." },
+  // visual / cross-browser
+  "visual.changed": { label: "Pages that look different from the approved version", why: "Something on these pages changed since the last approved check. That may be intended (a new banner) or a regression (a broken layout).", fix: "Review the before/after images. If the change was intended, approve it as the new baseline." },
+  "visual.horizontal-overflow": { label: "Pages that scroll sideways", why: "Part of the page is wider than the screen, so visitors must scroll sideways and content gets cut off, especially on phones.", fix: "Find the oversized element (listed in the appendix) and constrain its width." },
+  "visual.js-error-browser-specific": { label: "JavaScript errors in only some browsers", why: "A feature may be broken for everyone using that browser, which a quick check in Chrome will not reveal.", fix: "Reproduce in the listed browser and fix the script, or add a fallback." },
+  "visual.js-error": { label: "JavaScript errors when pages load", why: "Errors can stop menus, filters or add-to-cart from working.", fix: "Check the browser console on the listed pages and fix the failing script." },
+  "visual.image-browser-specific": { label: "Images that fail in some browsers", why: "Shoppers on those browsers see empty spaces where images should be.", fix: "Provide a fallback format (JPEG/PNG) alongside AVIF or WebP." },
+  "visual.no-viewport-meta": { label: "Pages not set up for phones", why: "Without a viewport tag, phones show a tiny zoomed-out desktop page.", fix: 'Add <meta name="viewport" content="width=device-width, initial-scale=1"> to the page template.' },
+  "visual.capture-failed": { label: "Pages that could not be opened in a browser", why: "The page timed out or crashed in that browser.", fix: "Open the page in that browser and check for errors." },
   // BigCommerce
   "bc.sample-products": { label: "BigCommerce sample products still live", why: "Demo '[Sample]' products are visible to shoppers and search engines.", fix: "Delete or hide the sample products and categories in the BigCommerce control panel." },
   "bc.store-domain-canonical": { label: "Canonical points at the temporary store address", why: "Google may index the *.mybigcommerce.com address instead of your domain.", fix: "Set your domain as the primary domain under Settings › Domain." },

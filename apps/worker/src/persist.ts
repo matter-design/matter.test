@@ -48,7 +48,16 @@ export async function persistSiteCheck(db: Db, runId: string, result: SiteCheckR
       ...(m.score !== null ? [{ runId, category: "performance" as const, url: m.url, metric: "lighthouse-score", value: { value: m.score, insights: m.insights, template: m.template }, pass: m.score >= 90 }] : []),
       ...(m.interaction ? [{ runId, category: "performance" as const, url: m.url, metric: "interaction", value: { value: m.interaction.latency, target: m.interaction.target, rating: rate("interaction", m.interaction.latency), template: m.template }, pass: rate("interaction", m.interaction.latency) === "good" }] : []),
     ]);
-    const allPerf = [...perfRows, ...weightRows, ...extraRows];
+    // One row per visual capture (page x browser x viewport) so the report can draw the cross-browser matrix.
+    const visualRows = (result.visual?.captures ?? []).map((c) => ({
+      runId,
+      category: "visual" as const,
+      url: c.url,
+      metric: "capture",
+      value: { ...c } as Record<string, unknown>,
+      pass: c.status === "error" ? null : c.status !== "changed" && c.overflowPx <= 1 && c.jsErrors.length === 0,
+    }));
+    const allPerf = [...perfRows, ...weightRows, ...extraRows, ...visualRows];
     if (allPerf.length) await tx.insert(checkResults).values(allPerf);
 
     for (const f of dedupe(result.findings)) {
@@ -103,6 +112,7 @@ export async function persistSiteCheck(db: Db, runId: string, result: SiteCheckR
           platformEvidence: result.platformEvidence,
           pages: result.pages.length,
           templates: result.templates,
+          visual: result.visual ? { browsers: result.visual.browsers, viewports: result.visual.viewports, skippedBrowsers: result.visual.skippedBrowsers } : null,
           findings: result.findings.length,
           possiblyFixed: stale.length,
         },

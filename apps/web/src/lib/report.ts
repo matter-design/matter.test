@@ -2,10 +2,12 @@ import "server-only";
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import type { CheckCategory, Platform } from "@mattertest/core";
 import { checkResults, clients, environments, findings, projects, runs, tasks } from "@mattertest/db";
-import { perfFromCheckResults, type ReportInput } from "@mattertest/report";
+import { readFile } from "node:fs/promises";
+import { artefactPath } from "@mattertest/core";
+import { perfFromCheckResults, visualChanges, type ReportCapture, type ReportInput } from "@mattertest/report";
 import { db } from "@/lib/server";
 
-const RUNNABLE: CheckCategory[] = ["crawl", "links", "seo", "performance", "accessibility", "security", "platform"];
+const RUNNABLE: CheckCategory[] = ["crawl", "links", "seo", "performance", "accessibility", "security", "platform", "visual"];
 
 export type ReportLookup =
   | { ok: true; input: ReportInput; fileName: string }
@@ -56,8 +58,21 @@ export async function loadReportInput(runId: string): Promise<ReportLookup> {
     .select({ url: checkResults.url, metric: checkResults.metric, value: checkResults.value })
     .from(checkResults)
     .where(and(eq(checkResults.runId, runId), eq(checkResults.category, "performance")));
+  const captures = (
+    await db
+      .select({ value: checkResults.value })
+      .from(checkResults)
+      .where(and(eq(checkResults.runId, runId), eq(checkResults.category, "visual"), eq(checkResults.metric, "capture")))
+  ).map((r) => r.value as ReportCapture);
 
-  const summary = (row.run.summary ?? {}) as { platform?: Platform; pages?: number; templates?: Record<string, number>; possiblyFixed?: number };
+  const summary = (row.run.summary ?? {}) as {
+    platform?: Platform;
+    pages?: number;
+    templates?: Record<string, number>;
+    possiblyFixed?: number;
+    visual?: { browsers: string[]; viewports: string[]; skippedBrowsers: { browser: string; reason: string }[] } | null;
+  };
+  const readArtefact = (uri: string) => readFile(artefactPath(uri)).catch(() => null);
   const params = row.task.params as { categories?: CheckCategory[]; perfThrottle?: "mobile" | "desktop" | "none" };
   const finishedAt = row.run.finishedAt ?? row.run.createdAt;
 
@@ -71,6 +86,7 @@ export async function loadReportInput(runId: string): Promise<ReportLookup> {
     templates: summary.templates ?? {},
     categoriesRun: (params.categories ?? RUNNABLE).filter((c) => RUNNABLE.includes(c)),
     perf: perfFromCheckResults(perfRows),
+    visual: summary.visual && captures.length ? { ...summary.visual, captures, changes: await visualChanges(captures, readArtefact) } : null,
     perfProfile: params.perfThrottle ?? "mobile",
     possiblyFixed: hasPrevious ? summary.possiblyFixed : undefined,
     findings: found.map((f) => ({

@@ -1,5 +1,6 @@
 import { CHECK_CATEGORIES, SEVERITIES, type CheckCategory, type FindingInput, type Platform, type Severity } from "@mattertest/core";
 import { ruleCopy } from "./copy";
+import type { ReportVisual } from "./visual";
 
 /** Performance numbers for one page. Structurally compatible with @mattertest/checks PerfMetrics. */
 export interface ReportPerf {
@@ -33,6 +34,8 @@ export interface ReportInput {
   templates: Record<string, number>;
   categoriesRun: CheckCategory[];
   perf: ReportPerf[];
+  /** Visual + cross-browser captures, when the visual category ran. */
+  visual?: ReportVisual | null;
   findings: ReportFinding[];
   /** Open findings from earlier runs not seen this time. */
   possiblyFixed?: number;

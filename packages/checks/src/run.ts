@@ -7,6 +7,7 @@ import { detectPlatform } from "./platform";
 import { packFor, type PackPage } from "./packs";
 import { startLighthouse, type LighthouseRunner } from "./lighthouse";
 import { DEFAULT_BUDGETS, instrumentContext, measureInteraction, measurePage, perfFindings, type PerfBudgets, type PerfMetrics, type Throttle } from "./performance";
+import { BROWSERS, runVisualChecks, visualFindings, type BrowserName, type VisualCapture, type VisualOptions, type ViewportName, VIEWPORTS } from "./visual";
 import { securityHeaderFindings, cookieFindings, EXPOSED_FILE_PROBES } from "./security";
 import { extractSeoFacts, seoPageFindings, seoSiteFindings } from "./seo";
 
@@ -29,6 +30,8 @@ export interface SiteCheckOptions {
   /** Time one harmless click per sampled page (lab stand-in for INP). Default true. */
   perfInteraction?: boolean;
   perfBudgets?: Partial<PerfBudgets>;
+  /** Visual + cross-browser settings. Without a store, only the cross-browser checks run (no screenshot diffs). */
+  visual?: Pick<VisualOptions, "browsers" | "viewports" | "store" | "mask" | "failRatio" | "threshold" | "maxHeight"> & { pagesPerTemplate?: number };
   onProgress?: (msg: string) => void;
 }
 
@@ -39,6 +42,8 @@ export interface SiteCheckResult {
   templates: Record<string, number>;
   /** Lab performance metrics, one entry per measured page. */
   perf: (PerfMetrics & { template: string })[];
+  /** Visual captures, one per page x browser x viewport. Null when the visual category was not run. */
+  visual: { browsers: BrowserName[]; viewports: ViewportName[]; captures: VisualCapture[]; skippedBrowsers: { browser: BrowserName; reason: string }[] } | null;
   findings: FindingInput[];
 }
 
@@ -224,13 +229,28 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
     findings.push(...pack.siteFindings(packPages, ctx));
   }
 
-  // visual, cross-browser and reporting: next phase (see README roadmap).
+  let visual: SiteCheckResult["visual"] = null;
+  if (want.has("visual")) {
+    const v = o.visual ?? {};
+    const browsers = v.browsers ?? [...BROWSERS];
+    const viewports = v.viewports ?? (Object.keys(VIEWPORTS) as ViewportName[]);
+    const sample = [...byTemplate.entries()].flatMap(([t, ps]) =>
+      ps.filter((p) => !p.error && (p.status ?? 0) < 400).slice(0, v.pagesPerTemplate ?? 1).map((p) => ({ url: p.url, template: t })),
+    );
+    log(`visual: ${sample.length} pages x ${browsers.length} browsers x ${viewports.length} viewports${v.store ? "" : " (no baseline store: cross-browser checks only)"}`);
+    const r = await runVisualChecks(sample, { ...v, browsers, viewports, chromium: browser, userAgent: ua, onProgress: log });
+    const tested = browsers.filter((b) => !r.skippedBrowsers.some((s) => s.browser === b));
+    visual = { browsers: tested, viewports, captures: r.captures, skippedBrowsers: r.skippedBrowsers };
+    findings.push(...visualFindings(r.captures, tested));
+  }
+
   return {
     platform,
     platformEvidence: evidence,
     pages: pages.map(({ html: _html, ...rest }) => rest),
     templates,
     perf,
+    visual,
     findings,
   };
 }

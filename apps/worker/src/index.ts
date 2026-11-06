@@ -5,6 +5,7 @@ import { chromium } from "playwright";
 import { QUEUES, SiteCheckJob } from "@mattertest/core";
 import { runSiteCheck } from "@mattertest/checks";
 import { createDb, runs, tasks } from "@mattertest/db";
+import { dbBaselineStore } from "./baselines";
 import { persistSiteCheck } from "./persist";
 
 const db = createDb();
@@ -26,6 +27,7 @@ const siteCheckWorker = new Worker(
         concurrency: Number(process.env.CRAWL_CONCURRENCY ?? 4),
         delayMs: Number(process.env.CRAWL_DELAY_MS ?? 250),
         userAgent: process.env.CRAWL_USER_AGENT,
+        visual: { store: dbBaselineStore(db, data.environmentId, data.runId) },
         onProgress: (msg) => void job.log(msg),
       });
       await persistSiteCheck(db, data.runId, result);

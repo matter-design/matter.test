@@ -8,16 +8,16 @@ import { parseArgs } from "node:util";
 import { chromium } from "playwright";
 import { CHECK_CATEGORIES } from "@mattertest/core";
 import type { SiteCheckResult } from "@mattertest/checks";
-import { buildReport, renderReportPdf } from "@mattertest/report";
+import { buildReport, renderReportHtml, renderReportPdf } from "@mattertest/report";
 import { reportInputFromResult, type CliReportMeta } from "./report";
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
-  options: { client: { type: "string" }, project: { type: "string" }, out: { type: "string" } },
+  options: { client: { type: "string" }, project: { type: "string" }, out: { type: "string" }, html: { type: "boolean", default: false } },
 });
 const file = positionals[0];
 if (!file) {
-  console.error('usage: pnpm report <result.json> [--client "Client name"] [--project "Project name"] [--out report.pdf]');
+  console.error('usage: pnpm report <result.json> [--client "Client name"] [--project "Project name"] [--out report.pdf] [--html]');
   process.exit(1);
 }
 
@@ -28,8 +28,14 @@ const out = values.out ?? file.replace(/\.json$/i, "") + ".pdf";
 
 const browser = await chromium.launch();
 try {
-  await writeFile(out, await renderReportPdf(browser, buildReport(reportInputFromResult({ ...saved, perf: saved.perf ?? [] }, meta, values))));
+  const model = buildReport(await reportInputFromResult({ ...saved, perf: saved.perf ?? [], visual: saved.visual ?? null }, meta, values));
+  await writeFile(out, await renderReportPdf(browser, model));
   console.log(`report: ${out}`);
+  // --html also writes the HTML the PDF is printed from, for previewing the layout in a browser.
+  if (values.html) {
+    await writeFile(out.replace(/\.pdf$/i, "") + ".html", renderReportHtml(model));
+    console.log(`html: ${out.replace(/\.pdf$/i, "")}.html`);
+  }
 } finally {
   await browser.close();
 }
