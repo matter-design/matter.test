@@ -23,7 +23,8 @@ Architecture and roadmap: see the *Agentic Test Management Tool — Architecture
 | Web app: project list, project page, start a check, runs, open findings | Done (basic) |
 | Client PDF report: summary, "fix these first", speed per page type, accessibility by WCAG criterion, platform/SEO/links/security, appendix; plain-English why/fix per issue; client branding | Done |
 | Visual + cross-browser: Chromium, Firefox and WebKit at phone/tablet/desktop; screenshot diffs against approved baselines; sideways scroll, browser-specific JS errors and images, missing viewport tag; approve changes in the web app; grid and before/after in the report | Done |
-| Shopify / WordPress / Laravel / Next.js packs | Next |
+| Shopify pack: templates from markup, password page, myshopify.com canonicals/links, theme placeholder text, unbuyable or $0 products, missing Product schema, duplicate collection product URLs, indexable filter/cart URLs, robots.txt defaults, app script load | Done |
+| WordPress / Laravel / Next.js packs | Next |
 | Doc ingestion → plan / scenarios / cases (Claude Agent SDK) | Phase 3 |
 | Self-healing sanity runner | Phase 4 |
 
@@ -87,7 +88,7 @@ Repeated issues are grouped by rule, so 200 pages missing OG tags is one line, n
 
 In the web app, the latest finished site check on a project has a **Client PDF** link (`/runs/<id>/report`). Older runs are refused because findings only remember the last run they were seen in. Ignored and accepted-risk findings are left out. `pnpm --filter @mattertest/report sample` renders a sample report for design review.
 
-Platform packs live in `packages/checks/src/packs/` and run when the detected platform has one (category `platform`, rules prefixed `bc.` for BigCommerce). A pack can also name page templates from markup, which beats URL guessing on flat BigCommerce URLs.
+Platform packs live in `packages/checks/src/packs/` and run when the detected platform has one (category `platform`, rules prefixed `bc.` for BigCommerce and `shopify.` for Shopify). Shared helpers (product schema, temporary-domain canonicals, robots.txt rules) are in `packs/util.ts`. A pack can also name page templates from markup, which beats URL guessing on flat BigCommerce URLs.
 
 Writes a JSON result to `./artefacts/`. Add `--pdf --client "Northwind Outdoor" --project "Store launch"` for the client PDF next to it, or render one later from a saved result:
 
@@ -105,7 +106,7 @@ packages/
   core/       shared enums, Zod schemas, finding fingerprint
   db/         Drizzle schema, migrations, seed
   checks/     deterministic check engine (Playwright, axe-core, cheerio, Lighthouse)
-    src/packs/  platform packs (BigCommerce today)
+    src/packs/  platform packs (BigCommerce, Shopify)
   report/     client PDF report (HTML template printed with Chromium)
 ```
 
