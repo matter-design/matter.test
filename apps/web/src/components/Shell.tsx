@@ -1,9 +1,10 @@
 import Link from "next/link";
 import type { Platform } from "@mattertest/core";
 import { currentUser } from "@/lib/auth";
-import { PLATFORM_LABEL } from "@/lib/format";
+import { agentSpendThisMonth, reviewCount } from "@/lib/assets";
+import { PLATFORM_LABEL, usd } from "@/lib/format";
 
-export type NavKey = "projects" | "dashboard" | "checks";
+export type NavKey = "projects" | "dashboard" | "checks" | "assets" | "review";
 
 export interface ShellProject {
   id: string;
@@ -16,15 +17,18 @@ export interface ShellProject {
 
 /**
  * App frame: dark sidebar plus the page. On project pages the sidebar shows the project and its sections.
- * Phase 3 sections (test assets, review inbox, sanity runs, heal queue) are left out until they exist.
+ * Phase 4 sections (sanity runs, heal queue) are left out until they exist.
  */
 export async function Shell({ active, project, children }: { active: NavKey; project?: ShellProject; children: React.ReactNode }) {
-  const user = await currentUser();
-  const items: { key: NavKey; label: string; href: string }[] = [{ key: "projects", label: "All projects", href: "/" }];
+  const [user, spend, toReview] = await Promise.all([currentUser(), agentSpendThisMonth(), project ? reviewCount(project.id) : 0]);
+  const items: { key: NavKey; label: string; href: string; badge?: number }[] = [{ key: "projects", label: "All projects", href: "/" }];
   if (project) {
     items.push({ key: "dashboard", label: "Dashboard", href: `/projects/${project.id}` });
     if (project.latestRunId) items.push({ key: "checks", label: "Website checks", href: `/runs/${project.latestRunId}` });
+    items.push({ key: "assets", label: "Test assets", href: `/projects/${project.id}/assets` });
+    items.push({ key: "review", label: "Review inbox", href: `/projects/${project.id}/review`, badge: toReview || undefined });
   }
+  const spentPct = spend.budget > 0 ? Math.min(100, Math.round((spend.spent / spend.budget) * 100)) : 0;
 
   return (
     <div className="shell">
@@ -46,9 +50,15 @@ export async function Shell({ active, project, children }: { active: NavKey; pro
         <div className="nav-items">
           {items.map((i) => (
             <Link key={i.key} href={i.href} className="nav-item" aria-current={i.key === active ? "page" : undefined}>
-              {i.label}
+              <span>{i.label}</span>
+              {i.badge ? <span className="nav-badge" aria-label={`${i.badge} to review`}>{i.badge}</span> : null}
             </Link>
           ))}
+        </div>
+        <div className="spend">
+          <span className="spend-label">Agent spend this month</span>
+          <span className="spend-value">{usd(spend.spent)} of {usd(spend.budget, 0)}</span>
+          <div className="spend-bar" role="img" aria-label={`${spentPct}% of the monthly budget`}><span style={{ width: `${spentPct}%` }} /></div>
         </div>
         {user && (
           <div className="whoami">

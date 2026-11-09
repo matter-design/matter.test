@@ -1,0 +1,280 @@
+import { readFile } from "node:fs/promises";
+import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
+import { artefactPath, type IngestJob, type PlanJob, type SourceType } from "@mattertest/core";
+import {
+  type Db,
+  clientQuestions,
+  clients,
+  environments,
+  projects,
+  requirements,
+  runs,
+  scenarios,
+  sourceChunks,
+  sources,
+  tasks,
+  testCases,
+  testPlans,
+} from "@mattertest/db";
+import {
+  AgentError,
+  NO_USAGE,
+  NeedsTranscript,
+  addUsage,
+  draftPlan,
+  extractRequirements,
+  readSource,
+  type Embedder,
+  type PlanInputChunk,
+  type ProjectContext,
+  type StructuredModel,
+  type Usage,
+} from "@mattertest/agent";
+
+export type AgentDeps = {
+  model: StructuredModel;
+  embedder: Embedder | null;
+  fetch?: typeof fetch;
+  /** Put a plan job on the queue (the worker passes the BullMQ queue; tests run it inline). */
+  queuePlan: (job: PlanJob) => Promise<void>;
+  log?: (msg: string) => void;
+};
+
+/** Most characters of source text shown to the planner before it falls back to only the cited passages (~150k tokens). */
+const PLAN_CONTEXT_CHARS = 600_000;
+
+async function start(db: Db, taskId: string, runId: string) {
+  await db.update(runs).set({ status: "running", startedAt: new Date() }).where(eq(runs.id, runId));
+  await db.update(tasks).set({ status: "running" }).where(eq(tasks.id, taskId));
+}
+
+async function finish(db: Db, taskId: string, runId: string, status: "done" | "failed" | "needs-review", usage: Usage, summary: Record<string, unknown>) {
+  await db
+    .update(runs)
+    .set({
+      status,
+      finishedAt: new Date(),
+      summary,
+      inputTokens: usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens,
+      outputTokens: usage.outputTokens,
+      costUsd: usage.costUsd.toFixed(4),
+    })
+    .where(eq(runs.id, runId));
+  await db.update(tasks).set({ status }).where(eq(tasks.id, taskId));
+}
+
+async function projectContext(db: Db, projectId: string): Promise<ProjectContext> {
+  const [row] = await db
+    .select({ project: projects.name, client: clients.name, platform: projects.platform })
+    .from(projects)
+    .innerJoin(clients, eq(clients.id, projects.clientId))
+    .where(eq(projects.id, projectId));
+  if (!row) throw new Error("Project not found");
+  const [env] = await db.select({ baseUrl: environments.baseUrl }).from(environments).where(eq(environments.projectId, projectId)).orderBy(environments.createdAt).limit(1);
+  return { ...row, siteUrl: env?.baseUrl ?? null };
+}
+
+/** Next free number for keys like REQ-07 / TC-014 in a column. */
+function nextNumber(keys: string[], prefix: string): number {
+  const re = new RegExp(`^${prefix}-(\\d+)$`);
+  return keys.reduce((n, k) => Math.max(n, Number(k.match(re)?.[1] ?? 0)), 0) + 1;
+}
+const keyOf = (prefix: string, n: number, width: number) => `${prefix}-${String(n).padStart(width, "0")}`;
+
+/** Read, chunk, embed and extract one source; then queue a plan run. */
+export async function runIngest(db: Db, job: IngestJob, deps: AgentDeps) {
+  const log = deps.log ?? (() => {});
+  await start(db, job.taskId, job.runId);
+  const [source] = await db.select().from(sources).where(eq(sources.id, job.sourceId));
+  if (!source) {
+    await finish(db, job.taskId, job.runId, "failed", NO_USAGE, { error: "Source not found" });
+    return;
+  }
+  await db.update(sources).set({ status: "ingesting", error: null }).where(eq(sources.id, source.id));
+  let usage = NO_USAGE;
+  try {
+    const file = source.fileUri ? await readFile(artefactPath(source.fileUri)) : undefined;
+    log(`reading ${source.type} source "${source.name}"`);
+    const { chunks, meta } = await readSource({ type: source.type as SourceType, file, link: source.uri }, deps.fetch);
+    log(`${chunks.length} chunks`);
+
+    let vectors: number[][] | null = null;
+    let embedError: string | undefined;
+    if (deps.embedder) {
+      try {
+        vectors = await deps.embedder.embed(chunks.map((c) => (c.sectionPath ? `${c.sectionPath}\n${c.text}` : c.text)));
+      } catch (e) {
+        embedError = (e as Error).message;
+        log(`embedding failed, storing chunks without vectors: ${embedError}`);
+      }
+    }
+
+    // Re-ingesting (e.g. after a transcript is attached) replaces this source's chunks, requirements and questions.
+    await db.delete(requirements).where(eq(requirements.sourceId, source.id));
+    await db.delete(clientQuestions).where(eq(clientQuestions.sourceId, source.id));
+    await db.delete(sourceChunks).where(eq(sourceChunks.sourceId, source.id));
+    const stored = await db
+      .insert(sourceChunks)
+      .values(chunks.map((c, i) => ({ sourceId: source.id, position: c.position, sectionPath: c.sectionPath, locator: c.locator, text: c.text, embedding: vectors?.[i] ?? null })))
+      .returning({ id: sourceChunks.id, position: sourceChunks.position });
+    const idAt = new Map(stored.map((s) => [s.position, s.id]));
+    const storedChunks = chunks.map((c) => ({ ...c, id: idAt.get(c.position)! }));
+
+    const ctx = await projectContext(db, source.projectId);
+    log("extracting requirements");
+    const extracted = await extractRequirements(deps.model, ctx, { name: meta.title ?? source.name, type: source.type }, storedChunks);
+    usage = extracted.usage;
+
+    const existing = await db.select({ key: requirements.key }).from(requirements).where(eq(requirements.projectId, source.projectId));
+    let n = nextNumber(existing.map((r) => r.key), "REQ");
+    if (extracted.requirements.length) {
+      await db.insert(requirements).values(
+        extracted.requirements.map((r) => ({ projectId: source.projectId, sourceId: source.id, key: keyOf("REQ", n++, 2), title: r.title, text: r.text, area: r.area, acceptanceCriteria: r.acceptanceCriteria, sourceChunkIds: r.sourceChunkIds })),
+      );
+    }
+    if (extracted.questions.length) {
+      await db.insert(clientQuestions).values(extracted.questions.map((q) => ({ projectId: source.projectId, sourceId: source.id, question: q.question, why: q.why, sourceChunkIds: q.sourceChunkIds })));
+    }
+
+    // An older version of the same document (same name, or same Loom link) no longer feeds the plan.
+    const older = await db
+      .select({ id: sources.id })
+      .from(sources)
+      .where(and(eq(sources.projectId, source.projectId), ne(sources.id, source.id), sql`${sources.version} < ${source.version}`, source.uri ? or(eq(sources.uri, source.uri), eq(sources.name, source.name)) : eq(sources.name, source.name)));
+    if (older.length) {
+      const ids = older.map((o) => o.id);
+      await db.update(sources).set({ status: "superseded" }).where(inArray(sources.id, ids));
+      await db.update(requirements).set({ reviewState: "superseded" }).where(inArray(requirements.sourceId, ids));
+    }
+
+    await db
+      .update(sources)
+      .set({ status: "ready", error: null, meta: { ...source.meta, ...meta, chunks: chunks.length } })
+      .where(eq(sources.id, source.id));
+    await finish(db, job.taskId, job.runId, "done", usage, {
+      chunks: chunks.length,
+      embedded: !!vectors,
+      ...(embedError ? { embedError } : {}),
+      requirements: extracted.requirements.length,
+      questions: extracted.questions.length,
+      dropped: extracted.report,
+      model: extracted.model,
+    });
+
+    if (job.thenPlan && extracted.requirements.length) {
+      const [task] = await db
+        .insert(tasks)
+        .values({ projectId: source.projectId, kind: "plan", trigger: "manual", title: "Draft test plan", params: { sourceId: source.id }, parentTaskId: job.taskId })
+        .returning();
+      const [run] = await db.insert(runs).values({ taskId: task!.id }).returning();
+      await deps.queuePlan({ taskId: task!.id, runId: run!.id, projectId: source.projectId });
+    }
+  } catch (e) {
+    if (e instanceof NeedsTranscript) {
+      await db.update(sources).set({ status: "needs-transcript", error: e.message }).where(eq(sources.id, source.id));
+      await finish(db, job.taskId, job.runId, "needs-review", usage, { needsTranscript: true, error: e.message });
+      return;
+    }
+    if (e instanceof AgentError) usage = addUsage(usage, e.usage);
+    const message = (e as Error).message;
+    await db.update(sources).set({ status: "failed", error: message }).where(eq(sources.id, source.id));
+    await finish(db, job.taskId, job.runId, "failed", usage, { error: message });
+    throw e;
+  }
+}
+
+/** Draft a new plan version from the project's live requirements. */
+export async function runPlan(db: Db, job: PlanJob, deps: AgentDeps) {
+  const log = deps.log ?? (() => {});
+  await start(db, job.taskId, job.runId);
+  let usage = NO_USAGE;
+  try {
+    const reqs = await db
+      .select({ r: requirements })
+      .from(requirements)
+      .innerJoin(sources, eq(sources.id, requirements.sourceId))
+      .where(and(eq(requirements.projectId, job.projectId), inArray(requirements.reviewState, ["needs-review", "approved"]), eq(sources.status, "ready")))
+      .orderBy(requirements.key);
+    if (!reqs.length) throw new Error("There are no requirements to plan from. Add a source first.");
+
+    const sourceIds = [...new Set(reqs.map((x) => x.r.sourceId!))];
+    const all = await db
+      .select({ c: sourceChunks, sourceName: sources.name, sourceType: sources.type, title: sql<string | null>`${sources.meta}->>'title'` })
+      .from(sourceChunks)
+      .innerJoin(sources, eq(sources.id, sourceChunks.sourceId))
+      .where(inArray(sourceChunks.sourceId, sourceIds))
+      .orderBy(sources.createdAt, sourceChunks.position);
+    const cited = new Set(reqs.flatMap((x) => x.r.sourceChunkIds));
+    const total = all.reduce((n, x) => n + x.c.text.length, 0);
+    const shown = total <= PLAN_CONTEXT_CHARS ? all : all.filter((x) => cited.has(x.c.id));
+    const chunks: PlanInputChunk[] = shown.map((x) => ({ ...x.c, sourceName: x.title ?? x.sourceName, sourceType: x.sourceType }));
+
+    const questions = await db.select({ q: clientQuestions.question }).from(clientQuestions).where(and(eq(clientQuestions.projectId, job.projectId), eq(clientQuestions.status, "open")));
+    const ctx = await projectContext(db, job.projectId);
+    log(`planning from ${reqs.length} requirements and ${chunks.length} passages`);
+    const drafted = await draftPlan(
+      deps.model,
+      ctx,
+      reqs.map((x) => ({ key: x.r.key, title: x.r.title, text: x.r.text, area: x.r.area, acceptanceCriteria: x.r.acceptanceCriteria, sourceChunkIds: x.r.sourceChunkIds })),
+      chunks,
+      questions.map((q) => q.q),
+    );
+    usage = drafted.usage;
+
+    const [prev] = await db.select({ version: testPlans.version }).from(testPlans).where(eq(testPlans.projectId, job.projectId)).orderBy(desc(testPlans.version)).limit(1);
+    const keys = await db
+      .select({ key: testCases.key })
+      .from(testCases)
+      .innerJoin(scenarios, eq(scenarios.id, testCases.scenarioId))
+      .innerJoin(testPlans, eq(testPlans.id, scenarios.planId))
+      .where(eq(testPlans.projectId, job.projectId));
+    let tc = nextNumber(keys.map((k) => k.key), "TC");
+
+    const caseCount = await db.transaction(async (tx) => {
+      // Earlier drafts give way to the new one; anything already approved stays approved.
+      const oldPlans = await tx.select({ id: testPlans.id }).from(testPlans).where(and(eq(testPlans.projectId, job.projectId), eq(testPlans.status, "draft")));
+      if (oldPlans.length) {
+        const ids = oldPlans.map((p) => p.id);
+        await tx.update(testPlans).set({ status: "superseded" }).where(inArray(testPlans.id, ids));
+        const scen = await tx.select({ id: scenarios.id }).from(scenarios).where(inArray(scenarios.planId, ids));
+        if (scen.length) await tx.update(testCases).set({ reviewState: "superseded" }).where(and(inArray(testCases.scenarioId, scen.map((s) => s.id)), eq(testCases.reviewState, "needs-review")));
+      }
+      const [plan] = await tx
+        .insert(testPlans)
+        .values({ projectId: job.projectId, taskId: job.taskId, name: drafted.plan.name, version: (prev?.version ?? 0) + 1, status: "draft", body: { summary: drafted.plan.summary, scope: drafted.plan.scope, outOfScope: drafted.plan.outOfScope, risks: drafted.plan.risks }, sourceIds })
+        .returning();
+      let cases = 0;
+      for (const [i, s] of drafted.scenarios.entries()) {
+        const [scen] = await tx.insert(scenarios).values({ planId: plan!.id, title: s.title, priority: s.priority, kind: s.kind, requirementIds: s.requirementKeys, position: i }).returning();
+        await tx.insert(testCases).values(
+          s.testCases.map((c) => ({
+            scenarioId: scen!.id,
+            key: keyOf("TC", tc++, 3),
+            title: c.title,
+            preconditions: c.preconditions,
+            testData: c.testData,
+            steps: c.steps,
+            type: "manual",
+            automationCandidate: c.automationCandidate,
+            sourceChunkIds: c.sourceChunkIds,
+          })),
+        );
+        cases += s.testCases.length;
+      }
+      return cases;
+    });
+
+    await finish(db, job.taskId, job.runId, "done", usage, {
+      requirements: reqs.length,
+      scenarios: drafted.scenarios.length,
+      testCases: caseCount,
+      passages: chunks.length,
+      dropped: drafted.report,
+      model: drafted.model,
+    });
+  } catch (e) {
+    if (e instanceof AgentError) usage = addUsage(usage, e.usage);
+    await finish(db, job.taskId, job.runId, "failed", usage, { error: (e as Error).message });
+    throw e;
+  }
+}

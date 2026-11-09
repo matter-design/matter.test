@@ -31,7 +31,7 @@ export const STATE_LABEL: Record<string, string> = {
   "accepted-risk": "Accepted risk",
 };
 
-export const RUN_STATUS_LABEL: Record<string, string> = { queued: "Queued", running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled" };
+export const RUN_STATUS_LABEL: Record<string, string> = { queued: "Queued", running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled", "needs-review": "Needs input" };
 
 export const TRIGGER_LABEL: Record<string, string> = { manual: "Manual", schedule: "Schedule", webhook: "Webhook", deploy: "Deploy", supervisor: "Agent" };
 
@@ -69,3 +69,32 @@ export function duration(from: Date | null, to: Date | null): string | null {
 }
 
 export const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString("en-AU")} ${n === 1 ? one : many}`;
+
+/** US dollars: "$2.31", or whole dollars with digits=0. Sub-cent amounts show as "<$0.01". */
+export function usd(n: number, digits = 2): string {
+  if (n > 0 && n < 0.01 && digits > 0) return "<$0.01";
+  return `$${n.toLocaleString("en-AU", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+}
+
+export const REVIEW_LABEL: Record<string, string> = { "needs-review": "Needs review", approved: "Approved", rejected: "Rejected", superseded: "Superseded", draft: "Draft" };
+
+export const SOURCE_STATUS_LABEL: Record<string, string> = {
+  queued: "Queued",
+  ingesting: "Reading",
+  ready: "Ingested",
+  "needs-transcript": "Needs a transcript",
+  failed: "Failed",
+  superseded: "Older version",
+};
+
+export const SOURCE_TYPE_LABEL: Record<string, string> = { pdf: "PDF", docx: "Word", md: "Markdown", transcript: "Transcript", loom: "Loom video" };
+
+export const KIND_LABEL: Record<string, string> = { happy: "Happy", negative: "Negative", edge: "Edge" };
+
+/** 125 → "02:05" (video timestamps). */
+export function clock(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  const h = Math.floor(s / 3600);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h ? `${h}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}` : `${pad(Math.floor(s / 60))}:${pad(s % 60)}`;
+}

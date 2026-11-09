@@ -1,0 +1,308 @@
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { Shell } from "@/components/Shell";
+import { RunStatus } from "@/components/badges";
+import { agentRuns, currentPlan, liveRequirements, passages, projectQuestions, projectSources, sourceTitle, type SourceRow } from "@/lib/assets";
+import { latestSiteCheck, projectWithClient } from "@/lib/queries";
+import { KIND_LABEL, REVIEW_LABEL, SOURCE_STATUS_LABEL, SOURCE_TYPE_LABEL, clock, duration, plural, timeAgo, usd } from "@/lib/format";
+import { regeneratePlan, retrySource, updateQuestion } from "./actions";
+import { AddSource, AttachTranscript, AutoRefresh } from "./SourceForms";
+
+export const dynamic = "force-dynamic";
+
+const TABS = ["plan", "requirements", "scenarios", "cases", "coverage", "questions"] as const;
+type Tab = (typeof TABS)[number];
+
+function sourceDetail(s: SourceRow): string {
+  const m = s.meta;
+  return [
+    SOURCE_TYPE_LABEL[s.type] ?? s.type,
+    s.version > 1 ? `version ${s.version}` : null,
+    m.pages ? plural(m.pages, "page") : null,
+    m.durationSec ? clock(m.durationSec) : null,
+    m.owner ? `by ${m.owner}` : null,
+    m.chunks ? plural(m.chunks, "passage") : null,
+    m.transcriptFrom === "upload" ? "transcript uploaded" : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+export default async function TestAssets({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ tab?: string }> }) {
+  const { id } = await params;
+  const { tab: tabParam } = await searchParams;
+  if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
+  const row = await projectWithClient(id);
+  if (!row) notFound();
+  const { project, client } = row;
+  const tab: Tab = (TABS as readonly string[]).includes(tabParam ?? "") ? (tabParam as Tab) : "plan";
+
+  const [srcs, reqs, tree, questions, runsList, latest] = await Promise.all([projectSources(id), liveRequirements(id), currentPlan(id), projectQuestions(id), agentRuns(id, 20), latestSiteCheck(id)]);
+  const cases = tree?.scenarios.flatMap((s) => s.cases.map((c) => ({ ...c, scenario: s }))) ?? [];
+  const openQuestions = questions.filter((q) => q.status === "open");
+  const busy = runsList.some((r) => r.status === "queued" || r.status === "running");
+  const lastPlanRun = runsList.find((r) => r.kind === "plan");
+  const inFlight = runsList.filter((r) => r.status === "queued" || r.status === "running");
+  const spent = runsList.reduce((n, r) => n + r.costUsd, 0);
+  const liveReqs = reqs.filter((r) => r.reviewState !== "rejected");
+  const coveredBy = (key: string) => tree?.scenarios.filter((s) => s.requirementIds.includes(key)).length ?? 0;
+  const covered = liveReqs.filter((r) => coveredBy(r.key) > 0).length;
+
+  // Passage labels for the coverage and questions tabs.
+  const chunkIds = tab === "coverage" ? liveReqs.flatMap((r) => r.sourceChunkIds.slice(0, 1)) : tab === "questions" ? questions.flatMap((q) => q.sourceChunkIds.slice(0, 2)) : [];
+  const where = new Map((await passages(chunkIds)).map((p) => [p.id, p]));
+  const citeLabel = (ids: string[]) =>
+    ids
+      .map((i) => where.get(i))
+      .filter(Boolean)
+      .map((p) => [p!.sourceName, p!.sectionPath].filter(Boolean).join(" · "))
+      .join(" and ");
+
+  const tabs: { id: Tab; label: string }[] = [
+    { id: "plan", label: "Plan" },
+    { id: "requirements", label: `Requirements · ${liveReqs.length}` },
+    { id: "scenarios", label: `Scenarios · ${tree?.scenarios.length ?? 0}` },
+    { id: "cases", label: `Test cases · ${cases.length}` },
+    { id: "coverage", label: "Coverage" },
+    { id: "questions", label: `Questions · ${openQuestions.length}` },
+  ];
+  const body = tree?.plan.body;
+
+  return (
+    <Shell active="assets" project={{ id, name: project.name, client: client.name, platform: project.platform, latestRunId: latest?.id }}>
+      <AutoRefresh active={busy} />
+      <div className="page-head">
+        <div>
+          <span className="crumbs"><Link href={`/projects/${id}`}>{client.name}</Link> / Test assets</span>
+          <div className="title-row">
+            <h1>{project.name}</h1>
+            {tree && <span className={`pill status-${tree.plan.status}`}>Plan v{tree.plan.version} · {REVIEW_LABEL[tree.plan.status] ?? tree.plan.status}</span>}
+          </div>
+        </div>
+        <div className="row">
+          <Link className="btn" href={`/projects/${id}/review`}>Review and approve</Link>
+        </div>
+      </div>
+
+      <div className="assets-layout">
+        <aside className="assets-side">
+          <section className="panel" aria-labelledby="sources-h">
+            <h2 id="sources-h" style={{ fontSize: 15 }}>Sources</h2>
+            {!srcs.length && <p className="muted small" style={{ margin: 0 }}>Nothing yet. Add the client&apos;s brief, requirements document or a Loom walkthrough.</p>}
+            {srcs.map((s) => (
+              <div key={s.id} className="source-row">
+                <div className="row">
+                  {s.status === "ready" ? <Link className="source-name" href={`/sources/${s.id}`}>{sourceTitle(s)}</Link> : <span className="source-name">{sourceTitle(s)}</span>}
+                  <span className={`pill status-${s.status}`}>{SOURCE_STATUS_LABEL[s.status] ?? s.status}</span>
+                </div>
+                <span className="small muted">{sourceDetail(s)}</span>
+                {s.type === "loom" && s.uri && <a className="small" href={s.uri} target="_blank" rel="noreferrer">Open in Loom</a>}
+                {s.error && <span className="small" style={{ color: s.status === "failed" ? "var(--crit)" : "var(--high)" }}>{s.error}</span>}
+                {s.status === "needs-transcript" && <AttachTranscript sourceId={s.id} />}
+                {s.status === "failed" && (
+                  <form action={retrySource}>
+                    <input type="hidden" name="sourceId" value={s.id} />
+                    <button type="submit" className="btn btn-outline btn-sm">Try again</button>
+                  </form>
+                )}
+              </div>
+            ))}
+            <AddSource projectId={id} />
+          </section>
+
+          <section className="agent-card" aria-labelledby="gen-h">
+            <div className="row" style={{ gap: 8 }}><span className="tag">AGENT</span><h2 id="gen-h" style={{ fontSize: 14 }}>Generation run</h2></div>
+            {inFlight.map((r) => (
+              <span key={r.id} className="row small" style={{ gap: 8 }}><RunStatus status={r.status} /> {r.title}</span>
+            ))}
+            {lastPlanRun && lastPlanRun.status === "done" && (
+              <span className="facts-line">
+                {[
+                  plural(liveReqs.length, "requirement"),
+                  plural(tree?.scenarios.length ?? 0, "scenario"),
+                  plural(cases.length, "test case"),
+                  plural(openQuestions.length, "question") + " for the client",
+                  `${usd(spent)} so far`,
+                  duration(lastPlanRun.startedAt, lastPlanRun.finishedAt) ? `last plan took ${duration(lastPlanRun.startedAt, lastPlanRun.finishedAt)}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            )}
+            {lastPlanRun?.status === "failed" && <span className="small" style={{ color: "var(--crit)" }}>The last plan run failed: {String(lastPlanRun.summary?.error ?? "unknown error")}</span>}
+            {!runsList.length && <span className="facts-line">Add a source and the agent reads it, extracts requirements and drafts a plan for you to review.</span>}
+            {reqs.length > 0 && (
+              <form action={regeneratePlan}>
+                <input type="hidden" name="projectId" value={id} />
+                <button type="submit" className="btn btn-outline btn-sm" disabled={busy}>Draft the plan again</button>
+              </form>
+            )}
+            {runsList.length > 0 && (
+              <details className="small">
+                <summary style={{ cursor: "pointer", fontWeight: 600 }}>Agent runs</summary>
+                <div className="stack" style={{ gap: 6, marginTop: 8 }}>
+                  {runsList.map((r) => (
+                    <span key={r.id} className="muted">
+                      {r.title} · {timeAgo(r.createdAt)} · {RunStatusText(r.status)}{r.costUsd ? ` · ${usd(r.costUsd)} · ${(r.inputTokens / 1000).toFixed(0)}k in / ${(r.outputTokens / 1000).toFixed(0)}k out` : ""}
+                    </span>
+                  ))}
+                </div>
+              </details>
+            )}
+          </section>
+        </aside>
+
+        <section className="assets-main">
+          <nav className="tabs" aria-label="Asset view">
+            {tabs.map((t) => (
+              <Link key={t.id} className="tab" href={`/projects/${id}/assets${t.id === "plan" ? "" : `?tab=${t.id}`}`} aria-current={t.id === tab ? "page" : undefined}>{t.label}</Link>
+            ))}
+          </nav>
+
+          {tab === "plan" && (
+            !tree ? (
+              <div className="empty">{busy ? "The agent is working on it. The plan appears here when it's ready." : "No plan yet. Add a source to get a draft."}</div>
+            ) : (
+              <div className="panel" style={{ gap: 18 }}>
+                <div className="stack" style={{ gap: 4 }}>
+                  <h2 style={{ fontSize: 16 }}>{tree.plan.name}</h2>
+                  {body?.summary && <p style={{ margin: 0, fontSize: 14, lineHeight: 1.55 }}>{body.summary}</p>}
+                </div>
+                <div className="kv">
+                  <div><h3>In scope</h3><ul className="ul">{body?.scope.map((s, i) => <li key={i}>{s}</li>)}</ul></div>
+                  <div><h3>Out of scope</h3>{body?.outOfScope.length ? <ul className="ul">{body.outOfScope.map((s, i) => <li key={i}>{s}</li>)}</ul> : <span className="muted">Nothing stated</span>}</div>
+                </div>
+                <h3>Risk-ranked areas</h3>
+                <div className="table-wrap" style={{ border: 0 }}>
+                  <table style={{ minWidth: 560 }}>
+                    <thead><tr><th>Area</th><th>Risk</th><th>Why</th><th>Priority</th></tr></thead>
+                    <tbody>
+                      {body?.risks.map((r, i) => (
+                        <tr key={i}><td style={{ fontWeight: 600 }}>{r.area}</td><td>{r.risk[0]!.toUpperCase() + r.risk.slice(1)}</td><td style={{ color: "var(--ink-2)" }}>{r.why}</td><td><span className="pill prio">{r.priority}</span></td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          )}
+
+          {tab === "requirements" && (
+            liveReqs.length ? (
+              <div className="table-wrap">
+                <table style={{ minWidth: 640 }}>
+                  <thead><tr><th>Key</th><th>Requirement</th><th>Area</th><th>State</th></tr></thead>
+                  <tbody>
+                    {reqs.map((r) => (
+                      <tr key={r.id}>
+                        <td className="muted">{r.key}</td>
+                        <td><Link className="cell-link" href={`/projects/${id}/review?item=req:${r.id}`}>{r.title}</Link><div className="sub">{r.text}</div></td>
+                        <td>{r.area}</td>
+                        <td><span className={`pill status-${r.reviewState}`}>{REVIEW_LABEL[r.reviewState]}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : <div className="empty">No requirements yet.</div>
+          )}
+
+          {tab === "scenarios" && (
+            tree?.scenarios.length ? (
+              <div className="panel" style={{ padding: 0, gap: 0 }}>
+                {tree.scenarios.map((s) => (
+                  <div key={s.id} className="row" style={{ justifyContent: "space-between", padding: "14px 18px", borderBottom: "1px solid var(--rule)" }}>
+                    <span className="stack" style={{ gap: 2, flex: "1 1 320px", minWidth: 0 }}>
+                      <span style={{ fontSize: 14, fontWeight: 600 }}>{s.title}</span>
+                      <span className="small muted">{s.requirementIds.join(", ")} · {plural(s.cases.length, "case")}</span>
+                    </span>
+                    <span className="row" style={{ gap: 6 }}><span className="pill prio">{s.priority}</span><span className="pill">{KIND_LABEL[s.kind] ?? s.kind}</span></span>
+                  </div>
+                ))}
+              </div>
+            ) : <div className="empty">No scenarios yet.</div>
+          )}
+
+          {tab === "cases" && (
+            cases.length ? (
+              <div className="table-wrap">
+                <table style={{ minWidth: 720 }}>
+                  <thead><tr><th>ID</th><th>Test case</th><th className="num">Steps</th><th>Type</th><th>State</th></tr></thead>
+                  <tbody>
+                    {cases.map((c) => (
+                      <tr key={c.id}>
+                        <td className="muted">{c.key}</td>
+                        <td><Link className="cell-link" href={`/projects/${id}/review?item=tc:${c.id}`}>{c.title}</Link><div className="sub">{c.scenario.title} · {c.scenario.priority}</div></td>
+                        <td className="num">{c.steps.length}</td>
+                        <td>{c.automationCandidate ? "Automation candidate" : "Manual"}</td>
+                        <td><span className={`pill status-${c.reviewState}`}>{REVIEW_LABEL[c.reviewState]}{c.edited ? " · edited" : ""}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : <div className="empty">No test cases yet.</div>
+          )}
+
+          {tab === "coverage" && (
+            liveReqs.length ? (
+              <div className="panel">
+                <span className="muted">{covered} of {plural(liveReqs.length, "requirement")} covered by the current plan. Each links back to its source passage.</span>
+                {liveReqs.map((r) => {
+                  const n = coveredBy(r.key);
+                  const first = where.get(r.sourceChunkIds[0] ?? "");
+                  return (
+                    <div key={r.id} className="list-row">
+                      <span>
+                        <Link className="list-title" href={`/projects/${id}/review?item=req:${r.id}`} style={{ textDecoration: "none" }}>{r.key} {r.title}</Link>
+                        {first && <Link className="list-sub" href={first.href}>{citeLabel([first.id])}</Link>}
+                      </span>
+                      {n ? <span className="pill status-approved">{plural(n, "scenario")}</span> : <span className="pill gap-pill">No scenarios</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : <div className="empty">No requirements yet.</div>
+          )}
+
+          {tab === "questions" && (
+            questions.length ? (
+              <div className="panel">
+                <span className="muted">The agent found these gaps in the sources instead of guessing. Send them to the client, then record the answers here.</span>
+                {questions.map((q) => (
+                  <div key={q.id} className="stack" style={{ gap: 6, padding: "12px 0", borderTop: "1px solid var(--rule)" }}>
+                    <div className="row" style={{ justifyContent: "space-between", flexWrap: "nowrap", alignItems: "flex-start" }}>
+                      <span style={{ fontSize: 14, fontWeight: 600 }}>{q.question}</span>
+                      {q.status !== "open" && <span className="pill">{q.status === "answered" ? "Answered" : "Dismissed"}</span>}
+                    </div>
+                    <span className="small muted">{[q.why, citeLabel(q.sourceChunkIds.slice(0, 2))].filter(Boolean).join(" · ")}</span>
+                    {q.answer && <span className="small">Answer: {q.answer}</span>}
+                    {q.status === "open" && (
+                      <form action={updateQuestion} className="row" style={{ gap: 8 }}>
+                        <input type="hidden" name="id" value={q.id} />
+                        <label className="sr-only" htmlFor={`ans-${q.id}`}>Client&apos;s answer</label>
+                        <input id={`ans-${q.id}`} name="answer" className="input" placeholder="Client's answer" style={{ flex: "1 1 240px", minHeight: 40 }} />
+                        <button type="submit" name="status" value="answered" className="btn btn-outline btn-sm">Save answer</button>
+                        <button type="submit" name="status" value="dismissed" className="btn btn-outline btn-sm">Dismiss</button>
+                      </form>
+                    )}
+                  </div>
+                ))}
+                {openQuestions.length > 0 && (
+                  <details>
+                    <summary className="btn btn-dark btn-sm" style={{ display: "inline-flex", listStyle: "none" }}>Show as a client email</summary>
+                    <pre className="evidence-pre" style={{ marginTop: 10 }}>{`Hi ${client.name} team,\n\nWhile planning testing for ${project.name} we found a few things the documents don't settle. Could you let us know:\n\n${openQuestions.map((q, i) => `${i + 1}. ${q.question}`).join("\n")}\n\nThanks!`}</pre>
+                  </details>
+                )}
+              </div>
+            ) : <div className="empty">No questions for the client.</div>
+          )}
+        </section>
+      </div>
+    </Shell>
+  );
+}
+
+function RunStatusText(status: string) {
+  return { queued: "queued", running: "running", done: "done", failed: "failed", "needs-review": "needs input" }[status] ?? status;
+}

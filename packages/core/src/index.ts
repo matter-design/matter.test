@@ -113,8 +113,75 @@ export const QUEUES = {
   agent: "agent",
 } as const;
 
+/** Kinds of client material a project can ingest. */
+export const SOURCE_TYPES = ["pdf", "docx", "md", "transcript", "loom"] as const;
+export type SourceType = (typeof SOURCE_TYPES)[number];
+
+/** Where an ingested source is in its life. */
+export const SOURCE_STATUSES = ["queued", "ingesting", "ready", "needs-transcript", "failed", "superseded"] as const;
+export type SourceStatus = (typeof SOURCE_STATUSES)[number];
+
+/** Review states shared by requirements, plans and test cases. */
+export const REVIEW_STATES = ["needs-review", "approved", "rejected", "superseded"] as const;
+export type ReviewState = (typeof REVIEW_STATES)[number];
+
+/** Files the upload accepts, by extension. `.txt`, `.vtt` and `.srt` are transcripts (e.g. downloaded from Loom). */
+export const UPLOAD_TYPES: Record<string, SourceType> = {
+  pdf: "pdf",
+  docx: "docx",
+  md: "md",
+  markdown: "md",
+  vtt: "transcript",
+  srt: "transcript",
+  txt: "transcript",
+};
+export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+/** The video id of a Loom share or embed link, or null if it isn't one. */
+export function loomVideoId(link: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(link.trim());
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  if (u.hostname !== "loom.com" && u.hostname !== "www.loom.com") return null;
+  const m = u.pathname.match(/^\/(?:share|embed)\/(?:[^/]*-)?([0-9a-f]{32})\/?$/i);
+  return m ? m[1]!.toLowerCase() : null;
+}
+
+/** A Loom share link at a point in the video (`?t=` seconds), for "traced to source" links. */
+export function loomLinkAt(link: string, sec: number | undefined): string {
+  if (sec === undefined || !Number.isFinite(sec)) return link;
+  const u = new URL(link);
+  u.searchParams.set("t", String(Math.max(0, Math.floor(sec))));
+  return u.toString();
+}
+
+/** Where in its source a chunk sits: a page for documents, a time range (seconds) for videos and transcripts. */
+export type ChunkLocator = { page?: number; startSec?: number; endSec?: number };
+
+/** Job: read a source, chunk + embed it, and extract requirements. */
+export const IngestJob = z.object({
+  taskId: z.string().uuid(),
+  runId: z.string().uuid(),
+  sourceId: z.string().uuid(),
+  /** Queue a plan run when ingest succeeds. */
+  thenPlan: z.boolean().default(true),
+});
+export type IngestJob = z.infer<typeof IngestJob>;
+
+/** Job: draft a test plan, scenarios and test cases from a project's requirements. */
+export const PlanJob = z.object({
+  taskId: z.string().uuid(),
+  runId: z.string().uuid(),
+  projectId: z.string().uuid(),
+});
+export type PlanJob = z.infer<typeof PlanJob>;
+
 /** The monorepo root (folder holding pnpm-workspace.yaml), or the current folder outside the repo. */
-function repoRoot(): string {
+export function repoRoot(): string {
   let dir = process.cwd();
   for (;;) {
     if (existsSync(join(dir, "pnpm-workspace.yaml"))) return dir;

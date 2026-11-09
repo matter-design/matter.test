@@ -28,7 +28,7 @@ Architecture and roadmap: see the *Agentic Test Management Tool — Architecture
 | Shopify pack: templates from markup, password page, myshopify.com canonicals/links, theme placeholder text, unbuyable or $0 products, missing Product schema, duplicate collection product URLs, indexable filter/cart URLs, robots.txt defaults, app script load | Done |
 | WordPress pack (+ WooCommerce products): templates from body classes, search engines discouraged, sample content and tagline, staging-host canonicals/links, PHP errors on pages, robots.txt blocking theme files, plugin load, version disclosure; probes REST user list, XML-RPC, debug.log, uploads listing, readme.html | Done |
 | Laravel / Next.js packs | Next |
-| Doc ingestion → plan / scenarios / cases (Claude Agent SDK) | Phase 3 |
+| Client docs → requirements → test plan, scenarios and test cases (Claude), with a Review inbox; see **Test assets** below | Done |
 | Self-healing sanity runner | Phase 4 |
 
 ## Run it locally
@@ -116,6 +116,23 @@ To show a terminal check in the web app without checking the site again, load it
 pnpm import-run ./artefacts/shop.example.com-2026-11-06T03-00-00-000Z.json --client "Northwind Outdoor" --project "Store launch"
 ```
 
+## Test assets (client docs → test cases)
+
+Each project has **Test assets** and a **Review inbox** in the sidebar.
+
+1. **Add a source** on Test assets: a PDF, Word (.docx) or Markdown brief or requirements document, a transcript file (.vtt, .srt, .txt), or a **Loom share link**. Files are stored under `artefacts/sources/<project>/`; uploading the same file twice is refused, and a changed file with the same name becomes version 2 (the old version's requirements drop out of planning).
+2. The worker's `ingest` job reads it, splits it into passages (by heading for documents, about 2-minute windows for videos), embeds each passage, and asks Claude for the **requirements** (each citing the passages it came from) and **questions for the client** where the source is vague or contradicts itself.
+3. A `plan` job then drafts a **test plan** (scope, out of scope, risk-ranked areas), **scenarios** and **test cases** with steps and expected results, again citing passages. Citations are checked against what Claude was shown; anything that can't be traced is dropped. Each new draft supersedes the previous draft; approved test cases stay approved.
+4. In the **Review inbox**, approve, reject or edit (title, preconditions, test data, steps) each test case, requirement and the plan. **Traced to source** quotes the passage and links to it in the source view (or to that moment in the Loom video). Rejecting requirements and pressing **Draft the plan again** re-plans without them.
+
+**Loom.** Loom has no official transcript API. For videos shared with "anyone with the link", the worker reads the transcript the share page uses (an undocumented Loom endpoint that may change). For workspace-only videos, or if that fails, the source shows **Needs a transcript**: download it in Loom (⋯ › Download › Transcript) and attach it there.
+
+**Model and cost.** Extraction and planning use `claude-opus-5-5` (override with `AGENT_MODEL`) with structured output, adaptive thinking at high effort, and server-side refusal fallbacks. Tokens and cost are stored on each run; the sidebar shows this month's agent spend against `AGENT_MONTHLY_BUDGET_USD` (default 150). Set `ANTHROPIC_API_KEY` in `.env`; without it, sources stop at "Claude isn't set up on the worker".
+
+**Embeddings** run locally (`EMBEDDINGS=local`, the default) with `mixedbread-ai/mxbai-embed-large-v1` (1024 dimensions) through transformers.js: no key, and nothing leaves the machine for this step. The model (~340 MB) downloads to `.cache/models` on first use; `pnpm --filter @mattertest/agent fetch-model` does it up front. `EMBEDDINGS=off` stores passages without vectors (extraction still works; Claude reads the whole source).
+
+Scanned PDFs (images of text) aren't read yet, and sources other than files and Loom (Jira epics, Confluence, Figma) come later.
+
 ## Layout
 
 ```
@@ -128,6 +145,8 @@ packages/
   checks/     deterministic check engine (Playwright, axe-core, cheerio, Lighthouse)
     src/packs/  platform packs (BigCommerce, Shopify, WordPress)
   report/     client PDF report (HTML template printed with Chromium)
+  agent/      doc ingestion: parsing (PDF, DOCX, Markdown, transcripts, Loom), chunking, local embeddings,
+              Claude extraction/planning prompts and schemas, citation checks
 ```
 
 Internal packages are source-only TypeScript (no build step): the worker runs on `tsx`, the web app transpiles them.
