@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "crawl_max_pages" integer DEFAULT 200 NOT NULL;

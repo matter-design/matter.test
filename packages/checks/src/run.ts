@@ -20,9 +20,14 @@ export interface SiteCheckOptions {
   delayMs?: number;
   userAgent?: string;
   respectRobots?: boolean;
-  /** How many pages per template get the (slower) axe scan. */
+  /**
+   * Pages of the same type (template) look alike, so accessibility, performance, SEO, security and visual checks
+   * only test this many of each type. Default 1. The crawl, link checks and platform pack still cover every page.
+   */
+  pagesPerTemplate?: number;
+  /** Override pagesPerTemplate for the axe scan. */
   a11yPagesPerTemplate?: number;
-  /** How many pages per template get a performance measurement. */
+  /** Override pagesPerTemplate for performance measurement. */
   perfPagesPerTemplate?: number;
   /** Throttling for performance runs. Default "mobile" (same as PageSpeed Insights mobile). */
   perfThrottle?: Throttle;
@@ -115,6 +120,10 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
     byTemplate.set(t, [...(byTemplate.get(t) ?? []), p]);
   }
 
+  /** The first `n` healthy pages of each type: what the per-type checks look at. */
+  const perType = o.pagesPerTemplate ?? 1;
+  const sampleOf = (n = perType) => [...byTemplate.values()].flatMap((ps) => ps.filter((p) => p.html && !p.error && (p.status ?? 0) < 400).slice(0, n));
+
   if (want.has("crawl")) {
     for (const p of pages) {
       if (p.error) findings.push({ category: "crawl", rule: "crawl.page-error", severity: "high", title: "Page failed to load", url: p.url, detail: p.error });
@@ -152,13 +161,19 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
   }
 
   if (want.has("seo")) {
-    const facts = pages.filter((p) => p.html && (p.status ?? 0) < 400).map((p) => extractSeoFacts(p.url, p.html));
+    const seoPages = sampleOf();
+    log(`SEO on ${seoPages.length} pages`);
+    const facts = seoPages.map((p) => extractSeoFacts(p.url, p.html));
     for (const f of facts) findings.push(...seoPageFindings(f));
     findings.push(...seoSiteFindings(facts));
   }
 
   if (want.has("security") && home) {
-    findings.push(...securityHeaderFindings(home.url, home.headers));
+    // Headers can differ by page type (e.g. checkout behind a different server rule), so sample each type.
+    const secPages = sampleOf();
+    if (!secPages.some((p) => p.url === home.url)) secPages.unshift(home);
+    log(`security headers on ${secPages.length} pages`);
+    for (const p of secPages) findings.push(...securityHeaderFindings(p.url, p.headers));
     const ctx = await newContext(browser, { userAgent: ua });
     const pg = await ctx.newPage();
     await pg.goto(home.url, { waitUntil: "domcontentloaded" }).catch(() => undefined);
@@ -178,8 +193,7 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
   }
 
   if (want.has("accessibility")) {
-    const perTemplate = o.a11yPagesPerTemplate ?? 2;
-    const sample = [...byTemplate.values()].flatMap((ps) => ps.filter((p) => !p.error).slice(0, perTemplate));
+    const sample = sampleOf(o.a11yPagesPerTemplate ?? perType);
     log(`axe scan on ${sample.length} pages (WCAG 2.2 AA)`);
     const ctx = await newContext(browser, { userAgent: ua });
     const pg = await ctx.newPage();
@@ -196,10 +210,9 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
 
   const perf: SiteCheckResult["perf"] = [];
   if (want.has("performance")) {
-    const perTemplate = o.perfPagesPerTemplate ?? 1;
     const throttle = o.perfThrottle ?? "mobile";
     const budgets = { ...DEFAULT_BUDGETS, ...o.perfBudgets };
-    const sample = [...byTemplate.values()].flatMap((ps) => ps.filter((p) => !p.error && (p.status ?? 0) < 400).slice(0, perTemplate));
+    const sample = sampleOf(o.perfPagesPerTemplate ?? perType);
     let lh: LighthouseRunner | undefined;
     if ((o.perfEngine ?? "lighthouse") === "lighthouse") {
       try {
@@ -271,9 +284,7 @@ export async function runSiteCheck(browser: Browser, o: SiteCheckOptions): Promi
     const v = o.visual ?? {};
     const browsers = v.browsers ?? [...BROWSERS];
     const viewports = v.viewports ?? (Object.keys(VIEWPORTS) as ViewportName[]);
-    const sample = [...byTemplate.entries()].flatMap(([t, ps]) =>
-      ps.filter((p) => !p.error && (p.status ?? 0) < 400).slice(0, v.pagesPerTemplate ?? 1).map((p) => ({ url: p.url, template: t })),
-    );
+    const sample = sampleOf(v.pagesPerTemplate ?? perType).map((p) => ({ url: p.url, template: templateOf.get(p.url) ?? "unknown" }));
     log(`visual: ${sample.length} pages x ${browsers.length} browsers x ${viewports.length} viewports${v.store ? "" : " (no baseline store: cross-browser checks only)"}`);
     const r = await runVisualChecks(sample, { ...v, browsers, viewports, chromium: browser, userAgent: ua, onProgress: log });
     const tested = browsers.filter((b) => !r.skippedBrowsers.some((s) => s.browser === b));

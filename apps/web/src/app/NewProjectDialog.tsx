@@ -4,7 +4,7 @@ import { startTransition, useActionState, useEffect, useRef, useState } from "re
 import type { Platform } from "@mattertest/core";
 import { createProject, detectSitePlatform, type DetectResult, type NewProjectState } from "@/app/actions";
 import { PLATFORM_LABEL } from "@/lib/format";
-import { ENVIRONMENT_OPTIONS } from "@/lib/environments";
+import { CRAWL_PAGES, ENVIRONMENT_OPTIONS, PAGES_PER_TYPE } from "@/lib/environments";
 
 const PACKS: Partial<Record<Platform, string>> = { bigcommerce: "BigCommerce", shopify: "Shopify", wordpress: "WordPress" };
 
@@ -37,6 +37,7 @@ function NewProjectForm({ onCancel }: { onCancel: () => void }) {
   const [url, setUrl] = useState("");
   const [detect, setDetect] = useState<Detect>({ state: "idle" });
   const [runFirst, setRunFirst] = useState(true);
+  const [pages, setPages] = useState<string>(String(CRAWL_PAGES.default));
 
   // Detect the platform shortly after the website address stops changing.
   useEffect(() => {
@@ -109,6 +110,18 @@ function NewProjectForm({ onCancel }: { onCancel: () => void }) {
         </section>
 
         <section>
+          <h3>Site check</h3>
+          <div className="fields">
+            <div className="field">
+              <label htmlFor="np-pages">Pages to crawl</label>
+              <input id="np-pages" name="crawlMaxPages" type="number" inputMode="numeric" className="input" min={CRAWL_PAGES.min} max={CRAWL_PAGES.max} step={1} required value={pages} onChange={(e) => setPages(e.target.value)} aria-describedby="np-pages-hint" {...fieldProps("crawlMaxPages")} />
+              <span id="np-pages-hint" className="small muted">Every crawled page gets link checks. Accessibility, speed, SEO, security and screenshots test {PAGES_PER_TYPE === 1 ? "one page" : `${PAGES_PER_TYPE} pages`} of each page type.</span>
+              {errorText("crawlMaxPages")}
+            </div>
+          </div>
+        </section>
+
+        <section>
           <h3>Connections <span className="hint muted small">(optional)</span></h3>
           <div className="fields">
             <div className="field">
@@ -134,8 +147,8 @@ function NewProjectForm({ onCancel }: { onCancel: () => void }) {
           </label>
           {runFirst && (
             <ol className="next-steps">
-              <li>Crawl the site, up to 200 pages, and group them by page type</li>
-              <li>Check links, SEO, accessibility (WCAG 2.2 AA), speed and security basics</li>
+              <li>Crawl the site, up to {Number(pages) > 0 ? Number(pages) : CRAWL_PAGES.default} pages, group them by page type and check every link</li>
+              <li>Check SEO, accessibility (WCAG 2.2 AA), speed and security basics on {PAGES_PER_TYPE === 1 ? "one page" : `${PAGES_PER_TYPE} pages`} of each type</li>
               <li>{platform && PACKS[platform] ? `Run the ${PACKS[platform]} check pack` : "Run the platform check pack if the platform has one"}</li>
               <li>Take the first screenshots in Chrome, Firefox and Safari as the visual baseline</li>
             </ol>
