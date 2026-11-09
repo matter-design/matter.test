@@ -48,6 +48,8 @@ export const projects = pgTable("projects", {
   platform: platformEnum("platform").notNull().default("custom"),
   jiraKey: text("jira_key"),
   slackChannel: text("slack_channel"),
+  /** Most pages a site check crawls. Set per project. */
+  crawlMaxPages: integer("crawl_max_pages").notNull().default(200),
   status: text("status").notNull().default("onboarding"),
   createdAt: created(),
 });

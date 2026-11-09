@@ -8,12 +8,11 @@ import type { CheckCategory, Platform } from "@mattertest/core";
 import { detectPlatform } from "@mattertest/checks/platform";
 import { baselines, clients, environments, findings, projects, runs, tasks } from "@mattertest/db";
 import { requireUser } from "@/lib/auth";
-import { ENVIRONMENT_NAMES } from "@/lib/environments";
+import { CRAWL_PAGES, ENVIRONMENT_NAMES } from "@/lib/environments";
 import { db, siteCheckQueue } from "@/lib/server";
 
 /** What "Start check" runs. Stored on the task so the report knows which areas were covered. */
 const CATEGORIES: CheckCategory[] = ["crawl", "links", "seo", "security", "accessibility", "performance", "platform", "visual"];
-const DEFAULT_MAX_PAGES = 200;
 
 type Env = typeof environments.$inferSelect;
 
@@ -35,14 +34,25 @@ async function queueSiteCheck(env: Env, maxPages: number, requestedBy: string, t
   return run!.id;
 }
 
-const StartInput = z.object({ environmentId: z.string().uuid(), maxPages: z.coerce.number().int().min(1).max(5000).default(DEFAULT_MAX_PAGES) });
+const crawlPages = z.coerce
+  .number({ message: "Enter a number of pages" })
+  .int("Use a whole number")
+  .min(CRAWL_PAGES.min, `At least ${CRAWL_PAGES.min} page`)
+  .max(CRAWL_PAGES.max, `At most ${CRAWL_PAGES.max} pages`);
 
-/** "Run site check" on the dashboard. */
+const StartInput = z.object({ environmentId: z.string().uuid() });
+
+/** "Run site check" on the dashboard. Crawls as many pages as the project's "Pages to crawl" setting. */
 export async function startSiteCheck(formData: FormData) {
   const user = await requireUser();
-  const { environmentId, maxPages } = StartInput.parse(Object.fromEntries(formData));
-  const [env] = await db.select().from(environments).where(eq(environments.id, environmentId));
-  if (!env) throw new Error("Environment not found");
+  const { environmentId } = StartInput.parse(Object.fromEntries(formData));
+  const [row] = await db
+    .select({ env: environments, maxPages: projects.crawlMaxPages })
+    .from(environments)
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .where(eq(environments.id, environmentId));
+  if (!row) throw new Error("Environment not found");
+  const { env, maxPages } = row;
   await queueSiteCheck(env, maxPages, user.email);
   revalidatePath(`/projects/${env.projectId}`);
   revalidatePath("/");
@@ -52,6 +62,19 @@ export async function startSiteCheck(formData: FormData) {
  * Approve the "now" screenshot of a visual change as the new baseline for that page/browser/viewport,
  * and close the finding. The old baseline stays in the table as history.
  */
+export type CrawlSettingsState = { error?: string; saved?: boolean };
+
+/** Save a project's "Pages to crawl" setting. */
+export async function saveCrawlSettings(_prev: CrawlSettingsState, formData: FormData): Promise<CrawlSettingsState> {
+  await requireUser();
+  const projectId = z.string().uuid().parse(formData.get("projectId"));
+  const parsed = crawlPages.safeParse(formData.get("crawlMaxPages"));
+  if (!parsed.success) return { error: parsed.error.issues[0]!.message };
+  await db.update(projects).set({ crawlMaxPages: parsed.data }).where(eq(projects.id, projectId));
+  revalidatePath(`/projects/${projectId}`);
+  return { saved: true };
+}
+
 export async function acceptVisualChange(formData: FormData) {
   const user = await requireUser();
   const findingId = z.string().uuid().parse(formData.get("findingId"));
@@ -104,6 +127,7 @@ const NewProject = z.object({
     .max(80)
     .regex(/^(#?[a-z0-9][a-z0-9._-]*)?$/, "Slack channels are lower case, e.g. #qa-northwind")
     .default(""),
+  crawlMaxPages: crawlPages.default(CRAWL_PAGES.default),
   platform: z.string().optional(),
   runFirstCheck: z.literal("on").optional(),
 });
@@ -147,6 +171,7 @@ export async function createProject(_prev: NewProjectState, formData: FormData):
         status: "onboarding",
         jiraKey: input.jiraKey || null,
         slackChannel: input.slackChannel ? (input.slackChannel.startsWith("#") ? input.slackChannel : `#${input.slackChannel}`) : null,
+        crawlMaxPages: input.crawlMaxPages,
       })
       .returning();
     const [created] = await tx.insert(environments).values({ projectId: project!.id, name: input.environment, baseUrl: new URL(input.url).toString() }).returning();
@@ -158,7 +183,7 @@ export async function createProject(_prev: NewProjectState, formData: FormData):
   let queued = "";
   if (input.runFirstCheck) {
     try {
-      await queueSiteCheck(env, DEFAULT_MAX_PAGES, user.email, `First site check: ${env.name}`);
+      await queueSiteCheck(env, input.crawlMaxPages, user.email, `First site check: ${env.name}`);
     } catch {
       queued = "?queue=failed";
     }

@@ -75,6 +75,17 @@ afterAll(async () => {
 });
 
 describe("runSiteCheck against the fixture site", () => {
+  it("tests only pagesPerTemplate pages of each type for SEO and security", async () => {
+    const result = await runSiteCheck(browser, { baseUrl: `${base}/`, categories: ["seo", "security"], maxPages: 20, concurrency: 2, delayMs: 0, pagesPerTemplate: 1 });
+    // Two product pages were crawled, but only one of them is tested.
+    expect(result.templates.pdp).toBe(2);
+    const pdpUrls = (cat: string) => new Set(result.findings.filter((f) => f.category === cat && /\/(products\/tent|orbit-terrarium\/)$/.test(f.url)).map((f) => f.url));
+    expect(pdpUrls("security").size).toBe(1);
+    expect(pdpUrls("seo").size).toBeLessThanOrEqual(1);
+    // Home is always included for security headers.
+    expect(result.findings.some((f) => f.category === "security" && new URL(f.url).pathname === "/")).toBe(true);
+    }, 60_000);
+
   it("crawls, detects the platform and reports the planted problems", async () => {
     const result = await runSiteCheck(browser, {
       baseUrl: `${base}/`,

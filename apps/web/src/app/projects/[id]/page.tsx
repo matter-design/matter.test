@@ -7,6 +7,7 @@ import { startSiteCheck } from "@/app/actions";
 import { Shell } from "@/components/Shell";
 import { RunStatus, SeverityPill } from "@/components/badges";
 import { VisualChange } from "@/components/VisualChange";
+import { CrawlSettings } from "./CrawlSettings";
 import { healthForRun, latestSiteCheck, projectWithClient, recentActivity } from "@/lib/queries";
 import { CATEGORY_LABEL, PLATFORM_LABEL, TRIGGER_LABEL, dateTime, duration, plural, timeAgo } from "@/lib/format";
 
@@ -56,18 +57,15 @@ export default async function ProjectDashboard({ params, searchParams }: { param
             <span className="pill">{PLATFORM_LABEL[project.platform]}</span>
             {project.status === "onboarding" && <span className="pill">Onboarding</span>}
           </div>
-          {(client.name !== project.name || project.jiraKey || project.slackChannel) && (
-            <span className="muted">
-              {[client.name !== project.name ? client.name : null, project.jiraKey ? `Jira ${project.jiraKey}` : null, project.slackChannel ? `Slack ${project.slackChannel}` : null].filter(Boolean).join(" · ")}
-            </span>
-          )}
+          <span className="muted">
+            {[client.name !== project.name ? client.name : null, `Crawls up to ${plural(project.crawlMaxPages, "page")}`, project.jiraKey ? `Jira ${project.jiraKey}` : null, project.slackChannel ? `Slack ${project.slackChannel}` : null].filter(Boolean).join(" · ")}
+          </span>
         </div>
         <form action={startSiteCheck} className="row">
           <label htmlFor="db-env" className="sr-only">Environment</label>
           <select id="db-env" name="environmentId" className="input">
             {envs.map((e) => <option key={e.id} value={e.id}>{e.name[0]!.toUpperCase() + e.name.slice(1)} · {new URL(e.baseUrl).host}</option>)}
           </select>
-          <input type="hidden" name="maxPages" value="200" />
           <button type="submit" className="btn" disabled={!envs.length || !!inFlight}>{inFlight ? "Check in progress" : "Run site check"}</button>
         </form>
       </div>
@@ -167,6 +165,10 @@ export default async function ProjectDashboard({ params, searchParams }: { param
           )}
         </>
       )}
+
+      <div className="section">
+        <CrawlSettings projectId={id} crawlMaxPages={project.crawlMaxPages} />
+      </div>
     </Shell>
   );
 }
