@@ -44,7 +44,7 @@ export default async function ProjectDashboard({ params, searchParams }: { param
   const fixFirst = open.filter((f) => !seen.has(f.rule) && seen.add(f.rule)).slice(0, 6);
   const ruleCount = (rule: string) => open.filter((f) => f.rule === rule).length;
   const visualChanges = open.filter((f) => f.rule === "visual.changed");
-  const inFlight = runsList.find((r) => r.status === "running" || r.status === "queued");
+  const inFlight = runsList.find((r) => r.kind === "site-check" && (r.status === "running" || r.status === "queued"));
   const checksHref = latest ? `/runs/${latest.id}` : null;
 
   return (
@@ -140,7 +140,7 @@ export default async function ProjectDashboard({ params, searchParams }: { param
               {runsList.map((r) => (
                 <div key={r.id} className="list-row">
                   <span>
-                    {r.status === "done" ? <Link className="list-title" href={`/runs/${r.id}`} style={{ textDecoration: "none" }}>{r.title}</Link> : <span className="list-title">{r.title}</span>}
+                    {r.kind === "ingest" || r.kind === "plan" ? <Link className="list-title" href={`/projects/${id}/assets`} style={{ textDecoration: "none" }}>{r.title}</Link> : r.status === "done" ? <Link className="list-title" href={`/runs/${r.id}`} style={{ textDecoration: "none" }}>{r.title}</Link> : <span className="list-title">{r.title}</span>}
                     <span className="list-sub">{TRIGGER_LABEL[r.trigger] ?? r.trigger} · {timeAgo(r.finishedAt ?? r.createdAt)}{r.summary && (r.summary as { findings?: number }).findings !== undefined ? ` · ${plural((r.summary as { findings: number }).findings, "finding")}` : ""}</span>
                   </span>
                   <span className="row" style={{ gap: 8, flexWrap: "nowrap" }}>

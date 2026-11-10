@@ -9,3 +9,4 @@ coverage/
 artefacts/
 test-results/
 playwright-report/
+.cache/

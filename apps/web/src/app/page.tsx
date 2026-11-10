@@ -8,7 +8,7 @@ import { NewProjectButton } from "./NewProjectDialog";
 
 export const dynamic = "force-dynamic";
 
-const KIND_LABEL: Record<string, string> = { "site-check": "Site check" };
+const KIND_LABEL: Record<string, string> = { "site-check": "Site check", ingest: "Read source", plan: "Test plan" };
 
 export default async function ProjectsPage() {
   const [cards, activity] = await Promise.all([listProjects(), recentActivity(8)]);
@@ -42,7 +42,7 @@ export default async function ProjectsPage() {
             <tbody>
               {activity.map((a) => (
                 <tr key={a.id}>
-                  <td><Link className="cell-link" href={a.status === "done" ? `/runs/${a.id}` : `/projects/${a.projectId}`}>{a.title}</Link></td>
+                  <td><Link className="cell-link" href={a.kind === "ingest" || a.kind === "plan" ? `/projects/${a.projectId}/assets` : a.status === "done" ? `/runs/${a.id}` : `/projects/${a.projectId}`}>{a.title}</Link></td>
                   <td>{a.projectName}</td>
                   <td className="muted">{KIND_LABEL[a.kind] ?? a.kind}</td>
                   <td className="muted">{TRIGGER_LABEL[a.trigger] ?? a.trigger}</td>

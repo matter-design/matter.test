@@ -28,7 +28,7 @@ Architecture and roadmap: see the *Agentic Test Management Tool — Architecture
 | Shopify pack: templates from markup, password page, myshopify.com canonicals/links, theme placeholder text, unbuyable or $0 products, missing Product schema, duplicate collection product URLs, indexable filter/cart URLs, robots.txt defaults, app script load | Done |
 | WordPress pack (+ WooCommerce products): templates from body classes, search engines discouraged, sample content and tagline, staging-host canonicals/links, PHP errors on pages, robots.txt blocking theme files, plugin load, version disclosure; probes REST user list, XML-RPC, debug.log, uploads listing, readme.html | Done |
 | Laravel / Next.js packs | Next |
-| Doc ingestion → plan / scenarios / cases (Claude Agent SDK) | Phase 3 |
+| Client docs → requirements → test plan, scenarios and test cases (Claude), with a Review inbox; see **Test assets** below | Done |
 | Self-healing sanity runner | Phase 4 |
 
 ## Run it locally
@@ -116,6 +116,33 @@ To show a terminal check in the web app without checking the site again, load it
 pnpm import-run ./artefacts/shop.example.com-2026-11-06T03-00-00-000Z.json --client "Northwind Outdoor" --project "Store launch"
 ```
 
+## Test assets (client docs → test cases)
+
+Each project has **Test assets** and a **Review inbox** in the sidebar.
+
+1. **Add a source** on Test assets: a PDF, Word (.docx) or Markdown brief or requirements document, a transcript file (.vtt, .srt, .txt), a **Loom share link**, or a **Confluence page link**. Files are stored under `artefacts/sources/<project>/`; uploading the same file twice is refused, and a changed file with the same name becomes version 2 (the old version's requirements drop out of planning).
+2. The worker's `ingest` job reads it, splits it into passages (by heading for documents, about 2-minute windows for videos), embeds each passage, and asks Claude for the **requirements** (each citing the passages it came from) and **questions for the client** where the source is vague or contradicts itself.
+3. A `plan` job then drafts a **test plan** (scope, out of scope, risk-ranked areas), **scenarios** and **test cases** with steps and expected results, again citing passages. Citations are checked against what Claude was shown; anything that can't be traced is dropped. Each new draft supersedes the previous draft; approved test cases stay approved.
+4. In the **Review inbox**, approve, reject or edit (title, preconditions, test data, steps) each test case, requirement and the plan. **Traced to source** quotes the passage and links to it in the source view (or to that moment in the Loom video). Rejecting requirements and pressing **Draft the plan again** re-plans without them.
+
+**User stories.** The plan works out user stories before scenarios: each is one real goal ("As a customer, I want to book a fitting at my store, so that the store expects me") grouping the requirements a person meets pursuing it, usually 3 to 8 per plan, with acceptance criteria as plain bullets and a priority. Scenarios are examples of a story, so the trace runs passage → requirement → story → scenario → test case. Test cases (TC-001), scenarios (SC-001) and stories (US-01) are numbered across the project and listed story by story; numbers continue after anything someone has reviewed (approved, rejected or edited), so a reviewed number is never reused, while unreviewed drafts that a new draft replaces free their numbers. Stories are reviewed in the Review inbox like everything else, and show on the **User stories** tab with their scenarios.
+
+**Business scenarios and coverage.** Scenarios are written as business situations: who is acting, what they're trying to do, and the outcome the business needs. The plan marks its critical requirements (a failure would be P0 or P1: lost sales or bookings, wrong money, data, legal) and, by default, every story and requirement gets a positive scenario and every critical one a negative one too, with edge scenarios where the sources give limits. After drafting, the worker checks that coverage; anything missing gets one smaller follow-up call that drafts only those scenarios, and whatever is still missing is listed on the plan. The **Coverage** tab shows positive, negative and edge scenarios per requirement and flags the gaps.
+
+**QA guidelines.** [`docs/qa-guidelines.md`](docs/qa-guidelines.md) holds Matter Design's house rules for every project: priority definitions, how to write steps and expected results, test data conventions, what to always consider and what to leave out. Claude gets it with every extraction and plan, after its built-in instructions (`packages/agent/src/prompts.ts`). Edit it like any doc and commit; the worker reads it fresh on each job, so no restart is needed. Each run records the guide's version (`guidelinesVersion` in the run summary). Set `QA_GUIDELINES_PATH` to use a different file.
+
+**Instructions for the agent.** At the top of Test assets, the team can tell Claude how to read this project's sources and plan its tests: what to focus on or skip, priorities, terms, test data conventions. Each add form also takes an optional **note for the agent** about that one source ("v1 brief, only section 4 still applies"); a new version of a file keeps the last note unless a new one is given. Both go to Claude on every read and plan, and are kept on the run's summary. They steer, they don't add facts: everything still has to come from the sources and cite them. Changes apply from the next read or plan; use **Draft the plan again**, or **Read again** on a source (which replaces that source's requirements, so approvals on them are lost).
+
+**Confluence.** Paste a page link (any of the usual shapes, including `/wiki/x/…` short links). Tick **Include child pages** to read the pages under it too, through folders, up to 50; each page becomes its own source, so an edit to one page only re-reads that page. The worker reads pages with one Atlassian account (`CONFLUENCE_BASE_URL`, `CONFLUENCE_EMAIL`, `CONFLUENCE_API_TOKEN` in `.env`, falling back to the `JIRA_*` values), so that account needs access to the space. **Check Confluence for updates** compares each page's Confluence version: unchanged pages are skipped, a changed page becomes a new version (its old requirements drop out of planning), new child pages are added, and one new plan is drafted. Nothing re-reads on its own, so Claude only runs when someone asks.
+
+**Loom.** Loom has no official transcript API. For videos shared with "anyone with the link", the worker reads the transcript the share page uses (an undocumented Loom endpoint that may change). For workspace-only videos, or if that fails, the source shows **Needs a transcript**: download it in Loom (⋯ › Download › Transcript) and attach it there.
+
+**Model and cost.** Extraction and planning use `claude-opus-5-5` (override with `AGENT_MODEL`) with structured output, adaptive thinking at high effort, and server-side refusal fallbacks. Tokens and cost are stored on each run; the sidebar shows this month's agent spend against `AGENT_MONTHLY_BUDGET_USD` (default 150). Set `ANTHROPIC_API_KEY` in `.env`; without it, sources stop at "Claude isn't set up on the worker".
+
+**Embeddings** run locally (`EMBEDDINGS=local`, the default) with `mixedbread-ai/mxbai-embed-large-v1` (1024 dimensions) through transformers.js: no key, and nothing leaves the machine for this step. The model (~340 MB) downloads to `.cache/models` on first use; `pnpm --filter @mattertest/agent fetch-model` does it up front. `EMBEDDINGS=off` stores passages without vectors (extraction still works; Claude reads the whole source).
+
+Scanned PDFs (images of text) aren't read yet, and sources other than files, Loom and Confluence (Jira epics, Figma) come later.
+
 ## Layout
 
 ```
@@ -128,6 +155,8 @@ packages/
   checks/     deterministic check engine (Playwright, axe-core, cheerio, Lighthouse)
     src/packs/  platform packs (BigCommerce, Shopify, WordPress)
   report/     client PDF report (HTML template printed with Chromium)
+  agent/      doc ingestion: parsing (PDF, DOCX, Markdown, transcripts, Loom, Confluence), chunking, local embeddings,
+              Claude extraction/planning prompts and schemas, citation checks
 ```
 
 Internal packages are source-only TypeScript (no build step): the worker runs on `tsx`, the web app transpiles them.

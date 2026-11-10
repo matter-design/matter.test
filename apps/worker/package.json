@@ -13,6 +13,7 @@
     "import-run": "tsx --env-file-if-exists=../../.env src/import-cli.ts"
   },
   "dependencies": {
+    "@mattertest/agent": "workspace:*",
     "@mattertest/checks": "workspace:*",
     "@mattertest/core": "workspace:*",
     "@mattertest/db": "workspace:*",

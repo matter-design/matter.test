@@ -15,6 +15,41 @@
       "when": 1794197286497,
       "tag": "0001_crawl_max_pages",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794212021829,
+      "tag": "0002_doc_to_tests",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794275955333,
+      "tag": "0003_agent_instructions",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794282055857,
+      "tag": "0004_business_scenarios",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794284947697,
+      "tag": "0005_user_stories",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794289034231,
+      "tag": "0006_scenario_keys",
+      "breakpoints": true
     }
   ]
 }

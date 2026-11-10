@@ -1,0 +1,21 @@
+WEBVTT
+
+1
+00:00:00.000 --> 00:00:06.500
+Hi team, quick walkthrough of what we want changed on the product pages.
+
+2
+00:00:07.000 --> 00:00:15.000
+So first, the size guide. It needs to open in a drawer, not a new tab, and it should remember the unit, centimetres or inches.
+
+3
+00:00:15.500 --> 00:00:24.000
+Then reviews. We want the star rating right under the product name, and clicking it should scroll down to the reviews.
+
+4
+00:00:30.000 --> 00:00:41.000
+And the back-in-stock thing. If a size is sold out, show a notify me button, they enter their email, and we send them a message when it's back. I'm not sure yet if we also do SMS.
+
+5
+00:00:41.500 --> 00:00:48.000
+That's it for now, thanks!
