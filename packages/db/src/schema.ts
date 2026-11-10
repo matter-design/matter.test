@@ -219,6 +219,8 @@ export const userStories = pgTable("user_stories", {
 export const scenarios = pgTable("scenarios", {
   id: id(),
   planId: uuid("plan_id").notNull().references(() => testPlans.id, { onDelete: "cascade" }),
+  /** SC-007, numbered across the project like test cases; null on plans drafted before scenario ids. */
+  key: text("key"),
   title: text("title").notNull(),
   priority: text("priority").notNull(), // P0..P3
   kind: text("kind").notNull(), // happy (positive) | negative | edge

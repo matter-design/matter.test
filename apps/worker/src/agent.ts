@@ -401,19 +401,37 @@ export async function runPlan(db: Db, job: PlanJob, deps: AgentDeps) {
     usage = drafted.usage;
 
     const [prev] = await db.select({ version: testPlans.version }).from(testPlans).where(eq(testPlans.projectId, job.projectId)).orderBy(desc(testPlans.version)).limit(1);
+    // Numbers continue after the test cases and stories someone has reviewed (approved, rejected or edited), so a
+    // number that may be referenced elsewhere is never reused. Unreviewed drafts are throwaway: their numbers recycle.
+    const reviewed = ["approved", "rejected"];
     const keys = await db
       .select({ key: testCases.key })
       .from(testCases)
       .innerJoin(scenarios, eq(scenarios.id, testCases.scenarioId))
       .innerJoin(testPlans, eq(testPlans.id, scenarios.planId))
-      .where(eq(testPlans.projectId, job.projectId));
+      .where(and(eq(testPlans.projectId, job.projectId), or(inArray(testCases.reviewState, reviewed), eq(testCases.edited, true))));
     let tc = nextNumber(keys.map((k) => k.key), "TC");
+    // A scenario's number is kept once any of its test cases has been reviewed or edited.
+    const scenarioKeys = await db
+      .selectDistinct({ key: scenarios.key })
+      .from(scenarios)
+      .innerJoin(testPlans, eq(testPlans.id, scenarios.planId))
+      .innerJoin(testCases, eq(testCases.scenarioId, scenarios.id))
+      .where(and(eq(testPlans.projectId, job.projectId), or(inArray(testCases.reviewState, reviewed), eq(testCases.edited, true))));
+    let sc = nextNumber(scenarioKeys.flatMap((k) => (k.key ? [k.key] : [])), "SC");
     const storyKeys = await db
       .select({ key: userStories.key })
       .from(userStories)
       .innerJoin(testPlans, eq(testPlans.id, userStories.planId))
-      .where(eq(testPlans.projectId, job.projectId));
+      .where(and(eq(testPlans.projectId, job.projectId), inArray(userStories.reviewState, reviewed)));
     let us = nextNumber(storyKeys.map((k) => k.key), "US");
+
+    // Keep each story's scenarios together (gap-filled ones arrive last), in story order; unlinked ones go at the end.
+    const storyOrder = new Map(drafted.stories.map((st, i) => [st.ref, i]));
+    const ordered = drafted.scenarios
+      .map((sc, i) => ({ sc, i }))
+      .sort((a, b) => (storyOrder.get(a.sc.storyRef ?? "") ?? Infinity) - (storyOrder.get(b.sc.storyRef ?? "") ?? Infinity) || a.i - b.i)
+      .map((x) => x.sc);
     // Stories get project-wide keys (US-07) in the order Claude gave them; gaps name stories by those keys too.
     const keyOfStory = new Map(drafted.stories.map((st) => [st.ref, keyOf("US", us++, 2)]));
     const gaps = drafted.plan.gaps.map((g) => ({ ...g, key: keyOfStory.get(g.key) ?? g.key }));
@@ -453,8 +471,8 @@ export async function runPlan(db: Db, job: PlanJob, deps: AgentDeps) {
         storyIds.set(st.ref, row!.id);
       }
       let cases = 0;
-      for (const [i, s] of drafted.scenarios.entries()) {
-        const [scen] = await tx.insert(scenarios).values({ planId: plan!.id, storyId: s.storyRef ? (storyIds.get(s.storyRef) ?? null) : null, title: s.title, actor: s.actor, situation: s.situation, outcome: s.outcome, priority: s.priority, kind: s.kind, requirementIds: s.requirementKeys, position: i }).returning();
+      for (const [i, s] of ordered.entries()) {
+        const [scen] = await tx.insert(scenarios).values({ planId: plan!.id, key: keyOf("SC", sc++, 3), storyId: s.storyRef ? (storyIds.get(s.storyRef) ?? null) : null, title: s.title, actor: s.actor, situation: s.situation, outcome: s.outcome, priority: s.priority, kind: s.kind, requirementIds: s.requirementKeys, position: i }).returning();
         await tx.insert(testCases).values(
           s.testCases.map((c) => ({
             scenarioId: scen!.id,

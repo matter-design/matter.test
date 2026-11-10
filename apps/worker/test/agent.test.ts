@@ -141,7 +141,11 @@ describe.skipIf(!hasDb)("agent jobs", () => {
     expect(planRun!.status).toBe("done");
     expect((planRun!.summary as { testCases: number }).testCases).toBe(2);
 
-    // A new version of the same document supersedes the old one; a fresh plan continues the numbering.
+    // Someone approves TC-001; TC-002 stays unreviewed.
+    await db.update(testCases).set({ reviewState: "approved" }).where(eq(testCases.id, cases[0]!.id));
+
+    // A new version of the same document supersedes the old one. The fresh plan continues after the reviewed case
+    // (TC-001 is kept), and reuses the number of the unreviewed one; no story was reviewed, so stories restart at US-01.
     writeFileSync(join(artefacts, "sources", projectId, "brief-v2.md"), Buffer.concat([brief, Buffer.from("\n\n## 8. Extra\n\nNew rule.\n")]));
     const v2 = await addSource(projectId, { fileUri: `sources/${projectId}/brief-v2.md`, version: 2 });
     const planned2: PlanJob[] = [];
@@ -155,8 +159,11 @@ describe.skipIf(!hasDb)("agent jobs", () => {
     expect(plans.map((p) => [p.version, p.status])).toEqual([[1, "superseded"], [2, "draft"]]);
     const newScen = await db.select().from(scenarios).where(eq(scenarios.planId, plans[1]!.id));
     const newCases = await db.select().from(testCases).where(inArray(testCases.scenarioId, newScen.map((s) => s.id))).orderBy(asc(testCases.key));
-    expect(newCases.map((c) => c.key)).toEqual(["TC-003", "TC-004"]);
-    expect((await db.select({ key: userStories.key }).from(userStories).where(eq(userStories.planId, plans[1]!.id))).map((x) => x.key)).toEqual(["US-02"]);
+    expect(newCases.map((c) => c.key)).toEqual(["TC-002", "TC-003"]);
+    // SC-001 holds the approved TC-001, so it keeps its number; the next draft's scenarios continue from SC-002.
+    expect(scen.map((x) => x.key)).toEqual(["SC-001", "SC-002"]);
+    expect(newScen.map((x) => x.key).sort()).toEqual(["SC-002", "SC-003"]);
+    expect((await db.select({ key: userStories.key }).from(userStories).where(eq(userStories.planId, plans[1]!.id))).map((x) => x.key)).toEqual(["US-01"]);
   });
 
   it("parks a Loom source that has no public transcript, then reads an attached one", async () => {
@@ -331,5 +338,29 @@ describe.skipIf(!hasDb)("agent jobs", () => {
     expect(ingest!.summary).toMatchObject({ instructions: "Focus on promo codes. Treat payments as P0.", sourceNote: "Version 1.2, signed off by the client.", guidelinesVersion: "abc123def456" });
     const [plan] = await db.select().from(runs).where(eq(runs.id, planned[0]!.runId));
     expect(plan!.summary).toMatchObject({ instructions: "Focus on promo codes. Treat payments as P0.", guidelinesVersion: "abc123def456" });
+  });
+
+  it("saves scenarios story by story, so test case numbers run in story order", async () => {
+    const projectId = await setup();
+    mkdirSync(join(artefacts, "sources", projectId), { recursive: true });
+    writeFileSync(join(artefacts, "sources", projectId, "o.md"), brief);
+    const job = await addSource(projectId, { fileUri: `sources/${projectId}/o.md` });
+    const planned: PlanJob[] = [];
+    await runIngest(db, { ...job, thenPlan: true }, deps(planned));
+    // Claude lists S2's scenario first (as a gap-filled scenario would arrive last for its story).
+    const outOfOrder: StructuredModel = async (req) => {
+      if (req.schema !== (PlanDraft as unknown)) return model(req);
+      const keys = [...req.user.matchAll(/<requirement key="(REQ-\d+)"[^>]*passages="(c\d+)/g)].map((m) => ({ key: m[1]!, ref: m[2]! }));
+      const story = (ref: string, key: string) => ({ ref, title: `Story ${ref}`, actor: "shopper", want: "w", soThat: "s", acceptanceCriteria: [], requirementKeys: [key], priority: "P2", critical: false, criticalWhy: "" });
+      const scen = (ref: string, k: { key: string; ref: string }) => ({ storyRef: ref, title: `For ${ref}`, actor: "a", situation: "s", outcome: "o", priority: "P2", kind: "happy", requirementKeys: [k.key], testCases: [{ title: `Case ${ref}`, preconditions: "", testData: "", steps: [{ action: "a", expected: "e" }], automationCandidate: false, chunkIds: [k.ref] }] });
+      const data = PlanDraft.parse({ name: "p", summary: "s", scope: [], outOfScope: [], risks: [], criticalRequirements: [], stories: [story("S1", keys[0]!.key), story("S2", keys[1]!.key)], scenarios: [scen("S2", keys[1]!), scen("S1", keys[0]!)] });
+      return { data: data as never, usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 }, model: "claude-opus-5-5" };
+    };
+    await runPlan(db, planned[0]!, { model: outOfOrder, embedder: null, queuePlan: async () => {} });
+    const [plan] = await db.select().from(testPlans).where(eq(testPlans.projectId, projectId));
+    const scen = await db.select().from(scenarios).where(eq(scenarios.planId, plan!.id)).orderBy(asc(scenarios.position));
+    expect(scen.map((x) => [x.key, x.title])).toEqual([["SC-001", "For S1"], ["SC-002", "For S2"]]);
+    const cases = await db.select().from(testCases).where(inArray(testCases.scenarioId, scen.map((x) => x.id))).orderBy(asc(testCases.key));
+    expect(cases.map((c) => [c.key, c.title])).toEqual([["TC-001", "Case S1"], ["TC-002", "Case S2"]]);
   });
 });

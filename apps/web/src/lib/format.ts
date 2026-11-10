@@ -76,7 +76,7 @@ export function usd(n: number, digits = 2): string {
   return `$${n.toLocaleString("en-AU", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 }
 
-export const REVIEW_LABEL: Record<string, string> = { "needs-review": "Needs review", approved: "Approved", rejected: "Rejected", superseded: "Superseded", draft: "Draft" };
+export const REVIEW_LABEL: Record<string, string> = { "needs-review": "Needs review", approved: "Approved", rejected: "Rejected", superseded: "Superseded", draft: "Draft", mixed: "Partly approved" };
 
 export const SOURCE_STATUS_LABEL: Record<string, string> = {
   queued: "Queued",

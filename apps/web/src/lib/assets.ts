@@ -110,13 +110,16 @@ export async function agentSpendThisMonth(): Promise<{ spent: number; budget: nu
 /** How many items wait in a project's Review inbox. */
 export async function reviewCount(projectId: string): Promise<number> {
   const tree = await currentPlan(projectId);
+  // Same items the Review inbox lists: the plan, requirements, stories, scenarios (waiting while any case is) and cases.
   const cases = tree ? tree.scenarios.reduce((n, s) => n + s.cases.filter((c) => c.reviewState === "needs-review").length, 0) : 0;
+  const scenarioCount = tree ? tree.scenarios.filter((s) => !s.cases.some((c) => c.reviewState !== "superseded") || s.cases.some((c) => c.reviewState === "needs-review")).length : 0;
+  const stories = tree ? tree.stories.filter((st) => st.reviewState === "needs-review").length : 0;
   const plan = tree?.plan.status === "draft" ? 1 : 0;
   const [r] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(requirements)
     .where(and(eq(requirements.projectId, projectId), eq(requirements.reviewState, "needs-review")));
-  return cases + plan + (r?.n ?? 0);
+  return cases + scenarioCount + stories + plan + (r?.n ?? 0);
 }
 
 export type Passage = {

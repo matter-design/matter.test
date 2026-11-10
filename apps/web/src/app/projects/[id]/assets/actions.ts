@@ -277,9 +277,11 @@ export async function regeneratePlan(formData: FormData) {
 /* ---------- Review ---------- */
 
 const Decision = z.enum(["approved", "rejected", "needs-review"]);
-const ReviewInput = z.object({ kind: z.enum(["tc", "req", "plan", "story"]), id: Uuid, decision: Decision });
+const ReviewInput = z.object({ kind: z.enum(["tc", "req", "plan", "story", "scenario"]), id: Uuid, decision: Decision });
 
-async function projectOf(kind: "tc" | "req" | "plan" | "story", id: string): Promise<string | null> {
+async function projectOf(kind: "tc" | "req" | "plan" | "story" | "scenario", id: string): Promise<string | null> {
+  if (kind === "scenario")
+    return (await db.select({ p: testPlans.projectId }).from(scenarios).innerJoin(testPlans, eq(testPlans.id, scenarios.planId)).where(eq(scenarios.id, id)))[0]?.p ?? null;
   if (kind === "story")
     return (await db.select({ p: testPlans.projectId }).from(userStories).innerJoin(testPlans, eq(testPlans.id, userStories.planId)).where(eq(userStories.id, id)))[0]?.p ?? null;
   if (kind === "req") return (await db.select({ p: requirements.projectId }).from(requirements).where(eq(requirements.id, id)))[0]?.p ?? null;
@@ -302,6 +304,8 @@ export async function reviewItem(formData: FormData) {
   const by = decision === "needs-review" ? { reviewedBy: null, reviewedAt: null } : { reviewedBy: user.email, reviewedAt: new Date() };
   if (kind === "req") await db.update(requirements).set({ reviewState: decision, ...by }).where(eq(requirements.id, id));
   if (kind === "tc") await db.update(testCases).set({ reviewState: decision, ...by }).where(eq(testCases.id, id));
+  // A scenario's decision applies to all of its test cases.
+  if (kind === "scenario") await db.update(testCases).set({ reviewState: decision, ...by }).where(and(eq(testCases.scenarioId, id), ne(testCases.reviewState, "superseded")));
   if (kind === "story") await db.update(userStories).set({ reviewState: decision, ...by }).where(eq(userStories.id, id));
   if (kind === "plan") await db.update(testPlans).set({ status: decision === "needs-review" ? "draft" : decision, ...by }).where(eq(testPlans.id, id));
   revalidate(projectId);

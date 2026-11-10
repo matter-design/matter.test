@@ -60,7 +60,9 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
   const tab: Tab = (TABS as readonly string[]).includes(tabParam ?? "") ? (tabParam as Tab) : "plan";
 
   const [srcs, reqs, tree, questions, runsList, latest] = await Promise.all([projectSources(id), liveRequirements(id), currentPlan(id), projectQuestions(id), agentRuns(id, 20), latestSiteCheck(id)]);
+  // Test cases in plan order (story by story), not key order, so the Story column reads in runs.
   const cases = tree?.scenarios.flatMap((s) => s.cases.map((c) => ({ ...c, scenario: s }))) ?? [];
+  const storyById = new Map((tree?.stories ?? []).map((st) => [st.id, st]));
   const openQuestions = questions.filter((q) => q.status === "open");
   const busy = runsList.some((r) => r.status === "queued" || r.status === "running");
   const hasConfluence = srcs.some((s) => s.type === "confluence");
@@ -318,7 +320,7 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
                         {scen.map((x) => (
                           <span key={x.id} className="row small" style={{ gap: 8, flexWrap: "nowrap", alignItems: "flex-start" }}>
                             <span className={`pill kind-${x.kind}`}>{KIND_LABEL[x.kind] ?? x.kind}</span>
-                            <span>{x.title} · {x.priority} · {plural(x.cases.length, "case")}</span>
+                            <span>{x.key && <span className="muted">{x.key} · </span>}{x.title} · {x.priority} · {plural(x.cases.length, "case")}</span>
                           </span>
                         ))}
                       </div>
@@ -342,7 +344,7 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
                       {g.list.map((s) => (
                         <div key={s.id} className="row" style={{ justifyContent: "space-between", padding: "14px 18px", borderBottom: "1px solid var(--rule)" }}>
                           <span className="stack" style={{ gap: 2, flex: "1 1 320px", minWidth: 0 }}>
-                            <span style={{ fontSize: 14, fontWeight: 600 }}>{s.title}</span>
+                            <span style={{ fontSize: 14, fontWeight: 600 }}>{s.key && <span className="muted" style={{ fontWeight: 500 }}>{s.key} · </span>}{s.title}</span>
                             {s.situation && (
                               <span className="small" style={{ color: "var(--ink-2)" }}>
                                 {s.actor && <strong>{s.actor} </strong>}
@@ -350,7 +352,7 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
                                 {s.outcome && <> → {s.outcome}</>}
                               </span>
                             )}
-                            <span className="small muted">{s.requirementIds.map((k) => (critical.has(k) ? `${k} (critical)` : k)).join(", ")} · {plural(s.cases.length, "case")}</span>
+                            <span className="small muted">{s.requirementIds.map((k) => (critical.has(k) ? `${k} (critical)` : k)).join(", ")} · {plural(s.cases.length, "case")}{s.cases.length ? `: ${s.cases.map((x) => x.key).join(", ")}` : ""}</span>
                           </span>
                           <span className="row" style={{ gap: 6 }}><span className="pill prio">{s.priority}</span><span className={`pill kind-${s.kind}`}>{KIND_LABEL[s.kind] ?? s.kind}</span></span>
                         </div>
@@ -364,18 +366,40 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
           {tab === "cases" && (
             cases.length ? (
               <div className="table-wrap">
-                <table style={{ minWidth: 720 }}>
-                  <thead><tr><th>ID</th><th>Test case</th><th className="num">Steps</th><th>Type</th><th>State</th></tr></thead>
+                <table style={{ minWidth: 880 }}>
+                  <thead><tr><th>ID</th><th>Story</th><th>Scenario</th><th>Test case</th><th className="num">Steps</th><th>Type</th><th>State</th></tr></thead>
                   <tbody>
-                    {cases.map((c) => (
+                    {cases.map((c) => {
+                      const story = c.scenario.storyId ? storyById.get(c.scenario.storyId) : undefined;
+                      return (
                       <tr key={c.id}>
-                        <td className="muted">{c.key}</td>
-                        <td><Link className="cell-link" href={`/projects/${id}/review?item=tc:${c.id}`}>{c.title}</Link><div className="sub">{c.scenario.title} · {c.scenario.priority}</div></td>
+                        <td className="muted nowrap">{c.key}</td>
+                        <td className="nowrap">{story ? <Link className="cell-link" href={`/projects/${id}/review?item=story:${story.id}`} title={story.title}>{story.key}</Link> : <span className="muted">–</span>}</td>
+                        <td className="nowrap" title={c.scenario.title}>{c.scenario.key ?? <span className="muted">–</span>}</td>
+                        <td>
+                          <Link className="cell-link" href={`/projects/${id}/review?item=tc:${c.id}`}>{c.title}</Link>
+                          <div className="case-scenario">
+                            <span className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                              <span className={`pill kind-${c.scenario.kind}`}>{KIND_LABEL[c.scenario.kind] ?? c.scenario.kind}</span>
+                              <span className="pill prio">{c.scenario.priority}</span>
+                              <span className="case-scenario-title">{c.scenario.key ? `${c.scenario.key} · ` : "Scenario: "}{c.scenario.title}</span>
+                            </span>
+                            {c.scenario.situation && (
+                              <span className="sub">
+                                {c.scenario.actor && <strong>{c.scenario.actor}: </strong>}
+                                {c.scenario.situation}
+                                {c.scenario.outcome && <> → {c.scenario.outcome}</>}
+                              </span>
+                            )}
+                            {c.scenario.cases.length > 1 && <span className="sub">One of {c.scenario.cases.length} cases for this scenario: {c.scenario.cases.map((x) => x.key).join(", ")}</span>}
+                          </div>
+                        </td>
                         <td className="num">{c.steps.length}</td>
                         <td>{c.automationCandidate ? "Automation candidate" : "Manual"}</td>
                         <td><span className={`pill status-${c.reviewState}`}>{REVIEW_LABEL[c.reviewState]}{c.edited ? " · edited" : ""}</span></td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

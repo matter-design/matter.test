@@ -236,6 +236,11 @@ td.finding-cell { min-width: 260px; }
 .status-ingesting { background: var(--accent-tint); color: var(--accent-ink); }
 .status-superseded { background: #f3f4f6; color: var(--muted); }
 .prio { background: var(--ink); color: #fff; font-weight: 700; }
+.type-filter { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--ink-2); font-size: 13px; font-weight: 500; text-decoration: none; }
+.chip:hover { border-color: var(--ink-2); color: var(--ink); }
+.chip[aria-current="page"] { background: var(--ink); border-color: var(--ink); color: #fff; font-weight: 600; }
+.chip-count { font-size: 12px; opacity: 0.75; }
 .tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; border-radius: 12px; background: #e9ecf1; align-self: flex-start; max-width: 100%; }
 .tab { display: inline-flex; align-items: center; min-height: 40px; padding: 0 14px; border-radius: 9px; color: var(--ink-2); font-size: 14px; font-weight: 500; text-decoration: none; }
 .tab:hover { color: var(--ink); background: rgba(255, 255, 255, 0.6); }
@@ -290,4 +295,7 @@ textarea.input { min-height: 72px; padding: 10px 12px; line-height: 1.45; resize
 .story-text { margin: 0; font-size: 15px; line-height: 1.55; }
 .story-card { gap: 12px; }
 .group-head { margin: 0; padding: 12px 18px; font-size: 13px; font-weight: 700; border-bottom: 1px solid var(--rule); background: var(--surface-2, #f6f7f9); border-radius: inherit; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.nowrap { white-space: nowrap; }
+.case-scenario { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding: 6px 0 2px 10px; border-left: 2px solid var(--rule); }
+.case-scenario-title { font-size: 13px; font-weight: 600; color: var(--ink-2); }
 .ul { margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.6; }
