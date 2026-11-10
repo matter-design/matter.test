@@ -10,7 +10,7 @@ import { AddSource, AgentInstructions, AttachTranscript, AutoRefresh } from "./S
 
 export const dynamic = "force-dynamic";
 
-const TABS = ["plan", "requirements", "scenarios", "cases", "coverage", "questions"] as const;
+const TABS = ["plan", "requirements", "stories", "scenarios", "cases", "coverage", "questions"] as const;
 type Tab = (typeof TABS)[number];
 
 function sourceDetail(s: SourceRow): string {
@@ -69,8 +69,22 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
   const inFlight = runsList.filter((r) => r.status === "queued" || r.status === "running");
   const spent = runsList.reduce((n, r) => n + r.costUsd, 0);
   const liveReqs = reqs.filter((r) => r.reviewState !== "rejected");
-  const coveredBy = (key: string) => tree?.scenarios.filter((s) => s.requirementIds.includes(key)).length ?? 0;
-  const covered = liveReqs.filter((r) => coveredBy(r.key) > 0).length;
+  const critical = new Set(tree?.plan.body?.critical?.map((c) => c.key) ?? []);
+  const criticalWhy = new Map(tree?.plan.body?.critical?.map((c) => [c.key, c.why]) ?? []);
+  const kindsFor = (key: string) => {
+    const n = { happy: 0, negative: 0, edge: 0 } as Record<string, number>;
+    for (const s of tree?.scenarios ?? []) if (s.requirementIds.includes(key)) n[s.kind] = (n[s.kind] ?? 0) + 1;
+    return n;
+  };
+  const reqTitle = new Map(liveReqs.map((r) => [r.key, r.title]));
+  const storyKinds = (storyId: string) => {
+    const n = { happy: 0, negative: 0, edge: 0 } as Record<string, number>;
+    for (const x of tree?.scenarios ?? []) if (x.storyId === storyId) n[x.kind] = (n[x.kind] ?? 0) + 1;
+    return n;
+  };
+  const withPositive = liveReqs.filter((r) => kindsFor(r.key).happy).length;
+  const criticalLive = liveReqs.filter((r) => critical.has(r.key));
+  const withNegative = criticalLive.filter((r) => kindsFor(r.key).negative).length;
 
   // Passage labels for the coverage and questions tabs.
   const chunkIds = tab === "coverage" ? liveReqs.flatMap((r) => r.sourceChunkIds.slice(0, 1)) : tab === "questions" ? questions.flatMap((q) => q.sourceChunkIds.slice(0, 2)) : [];
@@ -85,6 +99,7 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
   const tabs: { id: Tab; label: string }[] = [
     { id: "plan", label: "Plan" },
     { id: "requirements", label: `Requirements · ${liveReqs.length}` },
+    { id: "stories", label: `User stories · ${tree?.stories.length ?? 0}` },
     { id: "scenarios", label: `Scenarios · ${tree?.scenarios.length ?? 0}` },
     { id: "cases", label: `Test cases · ${cases.length}` },
     { id: "coverage", label: "Coverage" },
@@ -221,6 +236,11 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
                   <div><h3>In scope</h3><ul className="ul">{body?.scope.map((s, i) => <li key={i}>{s}</li>)}</ul></div>
                   <div><h3>Out of scope</h3>{body?.outOfScope.length ? <ul className="ul">{body.outOfScope.map((s, i) => <li key={i}>{s}</li>)}</ul> : <span className="muted">Nothing stated</span>}</div>
                 </div>
+                {!!body?.gaps?.length && (
+                  <p className="banner" role="note" style={{ margin: 0 }}>
+                    Still missing after the agent&apos;s second pass: {body.gaps.map((g) => `${g.missing} scenario for ${g.key}`).join(", ")}. The sources may not say enough; add them while reviewing, or ask the client.
+                  </p>
+                )}
                 <h3>Risk-ranked areas</h3>
                 <div className="table-wrap" style={{ border: 0 }}>
                   <table style={{ minWidth: 560 }}>
@@ -232,6 +252,13 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
                     </tbody>
                   </table>
                 </div>
+                {!!body?.critical?.length && (
+                  <>
+                    <h3>Critical requirements</h3>
+                    <p className="small muted" style={{ margin: 0 }}>Each gets a negative scenario as well as a positive one.</p>
+                    <ul className="ul">{body.critical.map((c) => <li key={c.key}><strong>{c.key}</strong> {reqTitle.get(c.key) ?? ""}: {c.why}</li>)}</ul>
+                  </>
+                )}
               </div>
             )
           )}
@@ -256,18 +283,80 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
             ) : <div className="empty">No requirements yet.</div>
           )}
 
+          {tab === "stories" && (
+            tree?.stories.length ? (
+              <div className="stack" style={{ gap: 12 }}>
+                {tree.stories.map((st) => {
+                  const scen = tree.scenarios.filter((x) => x.storyId === st.id);
+                  const k = storyKinds(st.id);
+                  return (
+                    <article key={st.id} className="panel story-card" aria-labelledby={`st-${st.id}`}>
+                      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <span className="stack" style={{ gap: 2, minWidth: 0 }}>
+                          <span className="small muted">{st.key} · covers {st.requirementIds.join(", ")}</span>
+                          <Link id={`st-${st.id}`} className="list-title" href={`/projects/${id}/review?item=story:${st.id}`} style={{ textDecoration: "none", fontSize: 16 }}>{st.title}</Link>
+                        </span>
+                        <span className="row" style={{ gap: 6 }}>
+                          <span className="pill prio">{st.priority}</span>
+                          {st.critical && <span className="pill gap-pill">Critical</span>}
+                          <span className={`pill status-${st.reviewState}`}>{REVIEW_LABEL[st.reviewState]}</span>
+                        </span>
+                      </div>
+                      <p className="story-text">
+                        <strong>As a</strong> {st.actor}, <strong>I want to</strong> {st.want}
+                        {st.soThat ? <>, <strong>so that</strong> {st.soThat}</> : null}.
+                      </p>
+                      {st.critical && st.criticalWhy && <span className="small" style={{ color: "var(--ink-2)" }}>Why it&apos;s critical: {st.criticalWhy}</span>}
+                      {!!st.acceptanceCriteria.length && (
+                        <div className="stack" style={{ gap: 4 }}>
+                          <span className="kv-label">Acceptance criteria</span>
+                          <ul className="ul">{st.acceptanceCriteria.map((a, i) => <li key={i}>{a}</li>)}</ul>
+                        </div>
+                      )}
+                      <div className="stack" style={{ gap: 6 }}>
+                        <span className="kv-label">Scenarios · {[k.happy && `${k.happy} positive`, k.negative && `${k.negative} negative`, k.edge && `${k.edge} edge`].filter(Boolean).join(", ") || "none"}</span>
+                        {scen.map((x) => (
+                          <span key={x.id} className="row small" style={{ gap: 8, flexWrap: "nowrap", alignItems: "flex-start" }}>
+                            <span className={`pill kind-${x.kind}`}>{KIND_LABEL[x.kind] ?? x.kind}</span>
+                            <span>{x.title} · {x.priority} · {plural(x.cases.length, "case")}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            ) : <div className="empty">{tree ? "This plan was drafted before user stories. Press Draft the plan again to add them." : "No user stories yet."}</div>
+          )}
+
           {tab === "scenarios" && (
             tree?.scenarios.length ? (
-              <div className="panel" style={{ padding: 0, gap: 0 }}>
-                {tree.scenarios.map((s) => (
-                  <div key={s.id} className="row" style={{ justifyContent: "space-between", padding: "14px 18px", borderBottom: "1px solid var(--rule)" }}>
-                    <span className="stack" style={{ gap: 2, flex: "1 1 320px", minWidth: 0 }}>
-                      <span style={{ fontSize: 14, fontWeight: 600 }}>{s.title}</span>
-                      <span className="small muted">{s.requirementIds.join(", ")} · {plural(s.cases.length, "case")}</span>
-                    </span>
-                    <span className="row" style={{ gap: 6 }}><span className="pill prio">{s.priority}</span><span className="pill">{KIND_LABEL[s.kind] ?? s.kind}</span></span>
-                  </div>
-                ))}
+              <div className="stack" style={{ gap: 12 }}>
+                {[...tree.stories.map((st) => ({ story: st as (typeof tree.stories)[number] | null, list: tree.scenarios.filter((x) => x.storyId === st.id) })), { story: null, list: tree.scenarios.filter((x) => !x.storyId || !tree.stories.some((st) => st.id === x.storyId)) }]
+                  .filter((g) => g.list.length)
+                  .map((g) => (
+                    <section key={g.story?.id ?? "none"} className="panel" style={{ padding: 0, gap: 0 }} aria-label={g.story ? `${g.story.key} ${g.story.title}` : "Scenarios"}>
+                      {tree.stories.length > 0 && (
+                        <h3 className="group-head">{g.story ? <>{g.story.key} · {g.story.title}</> : "Not linked to a story"}</h3>
+                      )}
+                      {g.list.map((s) => (
+                        <div key={s.id} className="row" style={{ justifyContent: "space-between", padding: "14px 18px", borderBottom: "1px solid var(--rule)" }}>
+                          <span className="stack" style={{ gap: 2, flex: "1 1 320px", minWidth: 0 }}>
+                            <span style={{ fontSize: 14, fontWeight: 600 }}>{s.title}</span>
+                            {s.situation && (
+                              <span className="small" style={{ color: "var(--ink-2)" }}>
+                                {s.actor && <strong>{s.actor} </strong>}
+                                {s.situation}
+                                {s.outcome && <> → {s.outcome}</>}
+                              </span>
+                            )}
+                            <span className="small muted">{s.requirementIds.map((k) => (critical.has(k) ? `${k} (critical)` : k)).join(", ")} · {plural(s.cases.length, "case")}</span>
+                          </span>
+                          <span className="row" style={{ gap: 6 }}><span className="pill prio">{s.priority}</span><span className={`pill kind-${s.kind}`}>{KIND_LABEL[s.kind] ?? s.kind}</span></span>
+                        </div>
+                      ))}
+                    </section>
+                  ))}
               </div>
             ) : <div className="empty">No scenarios yet.</div>
           )}
@@ -296,17 +385,48 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
           {tab === "coverage" && (
             liveReqs.length ? (
               <div className="panel">
-                <span className="muted">{covered} of {plural(liveReqs.length, "requirement")} covered by the current plan. Each links back to its source passage.</span>
+                {!!tree?.stories.length && (
+                  <>
+                    <h3 style={{ margin: 0 }}>By user story</h3>
+                    {tree.stories.map((st) => {
+                      const k = storyKinds(st.id);
+                      return (
+                        <div key={st.id} className="list-row">
+                          <span>
+                            <Link className="list-title" href={`/projects/${id}/review?item=story:${st.id}`} style={{ textDecoration: "none" }}>{st.key} {st.title}</Link>
+                            <span className="list-sub">{st.critical ? "Critical · " : ""}covers {st.requirementIds.join(", ")}</span>
+                          </span>
+                          <span className="row" style={{ gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                            {k.happy ? <span className="pill kind-happy">{k.happy} positive</span> : <span className="pill gap-pill">No positive</span>}
+                            {k.negative ? <span className="pill kind-negative">{k.negative} negative</span> : st.critical ? <span className="pill gap-pill">No negative</span> : null}
+                            {k.edge ? <span className="pill kind-edge">{k.edge} edge</span> : null}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    <h3 style={{ margin: "12px 0 0" }}>By requirement</h3>
+                  </>
+                )}
+                <span className="muted">
+                  {withPositive} of {plural(liveReqs.length, "requirement")} have a positive scenario
+                  {criticalLive.length ? `; ${withNegative} of ${criticalLive.length} critical ones have a negative scenario` : ""}. Each links back to its source passage.
+                </span>
                 {liveReqs.map((r) => {
-                  const n = coveredBy(r.key);
+                  const k = kindsFor(r.key);
+                  const isCritical = critical.has(r.key);
                   const first = where.get(r.sourceChunkIds[0] ?? "");
                   return (
                     <div key={r.id} className="list-row">
                       <span>
                         <Link className="list-title" href={`/projects/${id}/review?item=req:${r.id}`} style={{ textDecoration: "none" }}>{r.key} {r.title}</Link>
+                        {isCritical && <span className="list-sub">Critical: {criticalWhy.get(r.key)}</span>}
                         {first && <Link className="list-sub" href={first.href}>{citeLabel([first.id])}</Link>}
                       </span>
-                      {n ? <span className="pill status-approved">{plural(n, "scenario")}</span> : <span className="pill gap-pill">No scenarios</span>}
+                      <span className="row" style={{ gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                        {k.happy ? <span className="pill kind-happy">{k.happy} positive</span> : <span className="pill gap-pill">No positive</span>}
+                        {k.negative ? <span className="pill kind-negative">{k.negative} negative</span> : isCritical ? <span className="pill gap-pill">No negative</span> : null}
+                        {k.edge ? <span className="pill kind-edge">{k.edge} edge</span> : null}
+                      </span>
                     </div>
                   );
                 })}

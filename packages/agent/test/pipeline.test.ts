@@ -69,15 +69,37 @@ describe("draftPlan (model mocked)", () => {
         scope: ["Checkout"],
         outOfScope: [],
         risks: [{ area: "Promo codes", risk: "high", why: "Revenue", priority: "P0" }],
+        criticalRequirements: [{ key: "REQ-01", why: "Wrong totals cost revenue" }],
+        stories: [{ ref: "S1", title: "Use a promo code", actor: "guest shopper", want: "apply a promo code", soThat: "I pay the right price", acceptanceCriteria: ["Discount shows"], requirementKeys: ["REQ-01"], priority: "P0", critical: true, criticalWhy: "Revenue" }],
         scenarios: [
           {
             title: "Expired promo code",
+            storyRef: "S1",
+            actor: "Guest shopper",
+            situation: "Applies an expired code",
+            outcome: "Total unchanged",
             priority: "P0",
             kind: "negative",
             requirementKeys: ["REQ-01"],
             testCases: [{ title: "Expired code error", preconditions: "", testData: "SPRING10", steps: [{ action: "Apply SPRING10", expected: "Error with date" }], automationCandidate: true, chunkIds: ["c1"] }],
           },
-          { title: "Ghost", priority: "P2", kind: "happy", requirementKeys: ["REQ-42"], testCases: [] },
+          { title: "Ghost", storyRef: "S1", actor: "x", situation: "x", outcome: "x", priority: "P2", kind: "happy", requirementKeys: ["REQ-42"], testCases: [] },
+        ],
+      },
+      // The plan has no positive scenario for critical REQ-01, so the follow-up call is asked for one.
+      {
+        scenarios: [
+          {
+            title: "Guest applies a valid code",
+            storyRef: "S1",
+            actor: "Guest shopper",
+            situation: "Applies SPRING10 while it's live",
+            outcome: "Discount line shows and the total drops",
+            priority: "P0",
+            kind: "happy",
+            requirementKeys: ["REQ-01"],
+            testCases: [{ title: "Valid code", preconditions: "", testData: "SPRING10", steps: [{ action: "Apply SPRING10", expected: "Discount shown" }], automationCandidate: true, chunkIds: ["c1"] }],
+          },
         ],
       },
     ]);
@@ -86,9 +108,41 @@ describe("draftPlan (model mocked)", () => {
     expect(user).toContain('<requirement key="REQ-01" area="Promo" passages="c1">');
     expect(user).toContain('time="00:30"');
     expect(user).toContain("- Is SMS needed?");
-    expect(res.scenarios).toHaveLength(1);
+    expect(res.scenarios.map((x) => [x.title, x.kind])).toEqual([["Expired promo code", "negative"], ["Guest applies a valid code", "happy"]]);
     expect(res.scenarios[0]!.testCases[0]!.sourceChunkIds).toEqual(["k1"]);
-    expect(res.report.droppedScenarios).toBe(1);
+    // Missing: a positive scenario for story S1 and for requirement REQ-01; one follow-up scenario fills both.
+    expect(res.report).toMatchObject({ droppedScenarios: 1, gapsFound: 2, gapsFilled: 2 });
+    expect(res.stories.map((x) => x.ref)).toEqual(["S1"]);
+    expect(res.scenarios.map((x) => x.storyRef)).toEqual(["S1", "S1"]);
+    expect(res.plan.critical).toEqual([{ key: "REQ-01", why: "Wrong totals cost revenue" }]);
+    expect(res.plan.gaps).toEqual([]);
+    // One follow-up call, told exactly what's missing and what's already there; its cost is added.
+    expect(requests).toHaveLength(2);
+    expect(requests[1]!.user).toContain("- REQ-01: a positive scenario (kind \"happy\")");
+    expect(requests[1]!.user).toContain("- [negative] S1: Expired promo code (REQ-01)");
+    expect(requests[1]!.user).toContain("- S1 (critical): Use a promo code. As a guest shopper, I want to apply a promo code, so that I pay the right price. Covers REQ-01.");
+    expect(requests[1]!.user).toContain("- S1: a positive scenario");
+    expect(requests[1]!.user).not.toContain("Draft the test plan, scenarios and test cases.");
+    expect(requests[1]!.effort).toBe("medium");
+    expect(res.usage.costUsd).toBeCloseTo(0.016, 6);
+  });
+
+  it("skips the follow-up call when coverage is already complete, and reports what's still missing after one", async () => {
+    const chunks = [{ id: "k1", position: 0, sectionPath: "5.2", locator: {}, text: "Expired codes…", sourceName: "brief.md", sourceType: "md" }];
+    const scen = (kind: string, priority = "P2") => ({ title: `${kind} path`, storyRef: "S1", actor: "Shopper", situation: "s", outcome: "o", priority, kind, requirementKeys: ["REQ-01"], testCases: [{ title: kind, preconditions: "", testData: "", steps: [{ action: "a", expected: "e" }], automationCandidate: false, chunkIds: ["c1"] }] });
+    const base = { name: "p", summary: "s", scope: [], outOfScope: [], risks: [], stories: [{ ref: "S1", title: "t", actor: "a", want: "w", soThat: "s", acceptanceCriteria: [], requirementKeys: ["REQ-01"], priority: "P0", critical: true, criticalWhy: "Revenue" }] };
+    const reqs = [{ key: "REQ-01", title: "t", text: "…", area: null, acceptanceCriteria: [], sourceChunkIds: ["k1"] }];
+
+    const complete = mockModel([{ ...base, criticalRequirements: [{ key: "REQ-01", why: "Revenue" }], scenarios: [scen("happy", "P0"), scen("negative", "P0")] }]);
+    const ok = await draftPlan(complete.model, ctx, reqs, chunks);
+    expect(complete.requests).toHaveLength(1);
+    expect(ok.report).toMatchObject({ gapsFound: 0, gapsFilled: 0 });
+
+    const stubborn = mockModel([{ ...base, criticalRequirements: [{ key: "REQ-01", why: "Revenue" }], scenarios: [scen("happy", "P0")] }, { scenarios: [] }]);
+    const left = await draftPlan(stubborn.model, ctx, reqs, chunks);
+    expect(stubborn.requests).toHaveLength(2);
+    expect(left.plan.gaps).toEqual([{ key: "S1", missing: "negative" }, { key: "REQ-01", missing: "negative" }]);
+    expect(left.report).toMatchObject({ gapsFound: 2, gapsFilled: 0 });
   });
 });
 

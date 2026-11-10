@@ -167,6 +167,14 @@ export const requirements = pgTable(
 
 export type PlanRisk = { area: string; risk: "high" | "medium" | "low"; why: string; priority: "P0" | "P1" | "P2" | "P3" };
 
+/** A requirement the plan treats as critical (it must get a negative scenario as well as a positive one), and why. */
+export type CriticalRequirement = { key: string; why: string };
+/** A scenario the plan should have but doesn't, after the gap-filling pass. */
+/** Key is a requirement (REQ-01) or a user story (US-01). */
+export type CoverageGap = { key: string; missing: "positive" | "negative" };
+
+export type PlanBody = { summary?: string; scope: string[]; outOfScope: string[]; risks: PlanRisk[]; critical?: CriticalRequirement[]; gaps?: CoverageGap[] };
+
 export const testPlans = pgTable("test_plans", {
   id: id(),
   projectId: uuid("project_id").notNull().references(() => projects.id),
@@ -175,11 +183,37 @@ export const testPlans = pgTable("test_plans", {
   name: text("name").notNull(),
   version: integer("version").notNull().default(1),
   status: text("status").notNull().default("draft"), // draft | approved | rejected | superseded
-  body: jsonb("body").$type<{ summary?: string; scope: string[]; outOfScope: string[]; risks: PlanRisk[] }>(),
+  body: jsonb("body").$type<PlanBody>(),
   sourceIds: jsonb("source_ids").$type<string[]>().notNull().default([]),
   reviewedBy: text("reviewed_by"),
   reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
   createdAt: created(),
+});
+
+/**
+ * A user story in a plan: who wants what and why, grouping the requirements a person meets together.
+ * Business scenarios are examples of a story (positive, negative, edge).
+ */
+export const userStories = pgTable("user_stories", {
+  id: id(),
+  planId: uuid("plan_id").notNull().references(() => testPlans.id, { onDelete: "cascade" }),
+  key: text("key").notNull(), // US-01, numbered across the project's plan versions
+  title: text("title").notNull(),
+  /** "As a …" */
+  actor: text("actor").notNull(),
+  /** "I want to …" */
+  want: text("want").notNull(),
+  /** "so that …" */
+  soThat: text("so_that").notNull(),
+  acceptanceCriteria: jsonb("acceptance_criteria").$type<string[]>().notNull().default([]),
+  /** Requirement keys (REQ-01) the story covers. */
+  requirementIds: jsonb("requirement_ids").$type<string[]>().notNull().default([]),
+  priority: text("priority").notNull(), // P0..P3
+  critical: boolean("critical").notNull().default(false),
+  /** What a failure would cost, for critical stories. */
+  criticalWhy: text("critical_why"),
+  position: integer("position").notNull().default(0),
+  ...reviewed(),
 });
 
 export const scenarios = pgTable("scenarios", {
@@ -187,7 +221,15 @@ export const scenarios = pgTable("scenarios", {
   planId: uuid("plan_id").notNull().references(() => testPlans.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
   priority: text("priority").notNull(), // P0..P3
-  kind: text("kind").notNull(), // happy | negative | edge
+  kind: text("kind").notNull(), // happy (positive) | negative | edge
+  /** Who the scenario is about: "Guest shopper", "Store manager". */
+  actor: text("actor"),
+  /** The business situation, in the client's terms: what the actor is trying to do and under what conditions. */
+  situation: text("situation"),
+  /** The business outcome that shows it worked (or failed safely). */
+  outcome: text("outcome"),
+  /** The user story this scenario is an example of. */
+  storyId: uuid("story_id").references(() => userStories.id, { onDelete: "set null" }),
   /** Requirement keys (REQ-01) this scenario covers. */
   requirementIds: jsonb("requirement_ids").$type<string[]>().notNull().default([]),
   position: integer("position").notNull().default(0),

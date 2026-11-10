@@ -17,6 +17,7 @@ import {
   tasks,
   testCases,
   testPlans,
+  userStories,
 } from "@mattertest/db";
 import {
   AgentError,
@@ -27,10 +28,12 @@ import {
   addUsage,
   draftPlan,
   extractRequirements,
+  loadGuidelines,
   readPageTree,
   readSource,
   resolvePageId,
   type ConfluenceConfig,
+  type QaGuidelines,
   type Embedder,
   type PlanInputChunk,
   type ProjectContext,
@@ -42,6 +45,8 @@ export type AgentDeps = {
   model: StructuredModel;
   embedder: Embedder | null;
   fetch?: typeof fetch;
+  /** Matter Design's QA guidelines; defaults to reading docs/qa-guidelines.md fresh on each job. */
+  guidelines?: () => Promise<QaGuidelines | null>;
   /** Confluence connection, or null when it isn't set up. */
   confluence?: ConfluenceConfig | null;
   /** Put a plan job on the queue (the worker passes the BullMQ queue; tests run it inline). */
@@ -72,7 +77,7 @@ async function finish(db: Db, taskId: string, runId: string, status: "done" | "f
   await db.update(tasks).set({ status }).where(eq(tasks.id, taskId));
 }
 
-async function projectContext(db: Db, projectId: string): Promise<ProjectContext> {
+async function projectContext(db: Db, projectId: string, deps: AgentDeps): Promise<ProjectContext & { guidelinesVersion?: string }> {
   const [row] = await db
     .select({ project: projects.name, client: clients.name, platform: projects.platform, instructions: projects.agentInstructions })
     .from(projects)
@@ -80,7 +85,8 @@ async function projectContext(db: Db, projectId: string): Promise<ProjectContext
     .where(eq(projects.id, projectId));
   if (!row) throw new Error("Project not found");
   const [env] = await db.select({ baseUrl: environments.baseUrl }).from(environments).where(eq(environments.projectId, projectId)).orderBy(environments.createdAt).limit(1);
-  return { ...row, siteUrl: env?.baseUrl ?? null };
+  const guide = await (deps.guidelines ?? (() => loadGuidelines()))();
+  return { ...row, siteUrl: env?.baseUrl ?? null, guidelines: guide?.text ?? null, guidelinesVersion: guide?.version };
 }
 
 /** Next free number for keys like REQ-07 / TC-014 in a column. */
@@ -132,7 +138,7 @@ async function ingestSource(db: Db, source: Source, deps: AgentDeps): Promise<In
     const idAt = new Map(stored.map((s) => [s.position, s.id]));
     const storedChunks = chunks.map((c) => ({ ...c, id: idAt.get(c.position)! }));
 
-    const ctx = await projectContext(db, source.projectId);
+    const ctx = await projectContext(db, source.projectId, deps);
     log("extracting requirements");
     const extracted = await extractRequirements(deps.model, ctx, { name: meta.title ?? source.meta.title ?? source.name, type: source.type, note: source.meta.note }, storedChunks);
     usage = extracted.usage;
@@ -181,6 +187,7 @@ async function ingestSource(db: Db, source: Source, deps: AgentDeps): Promise<In
         // What the agent was told, kept with the run so a reviewer can see why the output looks the way it does.
         ...(ctx.instructions?.trim() ? { instructions: ctx.instructions.trim() } : {}),
         ...(source.meta.note ? { sourceNote: source.meta.note } : {}),
+        ...(ctx.guidelinesVersion ? { guidelinesVersion: ctx.guidelinesVersion } : {}),
       },
     };
   } catch (e) {
@@ -381,7 +388,7 @@ export async function runPlan(db: Db, job: PlanJob, deps: AgentDeps) {
     const chunks: PlanInputChunk[] = shown.map((x) => ({ ...x.c, sourceName: x.title ?? x.sourceName, sourceType: x.sourceType }));
 
     const questions = await db.select({ q: clientQuestions.question }).from(clientQuestions).where(and(eq(clientQuestions.projectId, job.projectId), eq(clientQuestions.status, "open")));
-    const ctx = await projectContext(db, job.projectId);
+    const ctx = await projectContext(db, job.projectId, deps);
     log(`planning from ${reqs.length} requirements and ${chunks.length} passages`);
     const drafted = await draftPlan(
       deps.model,
@@ -401,6 +408,15 @@ export async function runPlan(db: Db, job: PlanJob, deps: AgentDeps) {
       .innerJoin(testPlans, eq(testPlans.id, scenarios.planId))
       .where(eq(testPlans.projectId, job.projectId));
     let tc = nextNumber(keys.map((k) => k.key), "TC");
+    const storyKeys = await db
+      .select({ key: userStories.key })
+      .from(userStories)
+      .innerJoin(testPlans, eq(testPlans.id, userStories.planId))
+      .where(eq(testPlans.projectId, job.projectId));
+    let us = nextNumber(storyKeys.map((k) => k.key), "US");
+    // Stories get project-wide keys (US-07) in the order Claude gave them; gaps name stories by those keys too.
+    const keyOfStory = new Map(drafted.stories.map((st) => [st.ref, keyOf("US", us++, 2)]));
+    const gaps = drafted.plan.gaps.map((g) => ({ ...g, key: keyOfStory.get(g.key) ?? g.key }));
 
     const caseCount = await db.transaction(async (tx) => {
       // Earlier drafts give way to the new one; anything already approved stays approved.
@@ -413,11 +429,32 @@ export async function runPlan(db: Db, job: PlanJob, deps: AgentDeps) {
       }
       const [plan] = await tx
         .insert(testPlans)
-        .values({ projectId: job.projectId, taskId: job.taskId, name: drafted.plan.name, version: (prev?.version ?? 0) + 1, status: "draft", body: { summary: drafted.plan.summary, scope: drafted.plan.scope, outOfScope: drafted.plan.outOfScope, risks: drafted.plan.risks }, sourceIds })
+        .values({ projectId: job.projectId, taskId: job.taskId, name: drafted.plan.name, version: (prev?.version ?? 0) + 1, status: "draft", body: { summary: drafted.plan.summary, scope: drafted.plan.scope, outOfScope: drafted.plan.outOfScope, risks: drafted.plan.risks, critical: drafted.plan.critical, gaps }, sourceIds })
         .returning();
+      const storyIds = new Map<string, string>();
+      for (const [i, st] of drafted.stories.entries()) {
+        const [row] = await tx
+          .insert(userStories)
+          .values({
+            planId: plan!.id,
+            key: keyOfStory.get(st.ref)!,
+            title: st.title,
+            actor: st.actor,
+            want: st.want,
+            soThat: st.soThat,
+            acceptanceCriteria: st.acceptanceCriteria,
+            requirementIds: st.requirementKeys,
+            priority: st.priority,
+            critical: st.critical,
+            criticalWhy: st.criticalWhy,
+            position: i,
+          })
+          .returning({ id: userStories.id });
+        storyIds.set(st.ref, row!.id);
+      }
       let cases = 0;
       for (const [i, s] of drafted.scenarios.entries()) {
-        const [scen] = await tx.insert(scenarios).values({ planId: plan!.id, title: s.title, priority: s.priority, kind: s.kind, requirementIds: s.requirementKeys, position: i }).returning();
+        const [scen] = await tx.insert(scenarios).values({ planId: plan!.id, storyId: s.storyRef ? (storyIds.get(s.storyRef) ?? null) : null, title: s.title, actor: s.actor, situation: s.situation, outcome: s.outcome, priority: s.priority, kind: s.kind, requirementIds: s.requirementKeys, position: i }).returning();
         await tx.insert(testCases).values(
           s.testCases.map((c) => ({
             scenarioId: scen!.id,
@@ -441,9 +478,15 @@ export async function runPlan(db: Db, job: PlanJob, deps: AgentDeps) {
       scenarios: drafted.scenarios.length,
       testCases: caseCount,
       passages: chunks.length,
+      stories: drafted.stories.length,
+      critical: drafted.plan.critical.length,
+      gapsFound: drafted.report.gapsFound,
+      gapsFilled: drafted.report.gapsFilled,
+      ...(gaps.length ? { gapsLeft: gaps } : {}),
       dropped: drafted.report,
       model: drafted.model,
       ...(ctx.instructions?.trim() ? { instructions: ctx.instructions.trim() } : {}),
+      ...(ctx.guidelinesVersion ? { guidelinesVersion: ctx.guidelinesVersion } : {}),
     });
   } catch (e) {
     if (e instanceof AgentError) usage = addUsage(usage, e.usage);

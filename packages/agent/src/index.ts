@@ -3,6 +3,7 @@ export * from "./chunk";
 export * from "./embed";
 export * from "./loom";
 export * from "./confluence";
+export * from "./guidelines";
 export * from "./schemas";
 export * from "./claude";
 export * from "./prompts";

@@ -89,7 +89,7 @@ export const SOURCE_STATUS_LABEL: Record<string, string> = {
 
 export const SOURCE_TYPE_LABEL: Record<string, string> = { pdf: "PDF", docx: "Word", md: "Markdown", transcript: "Transcript", loom: "Loom video", confluence: "Confluence page" };
 
-export const KIND_LABEL: Record<string, string> = { happy: "Happy", negative: "Negative", edge: "Edge" };
+export const KIND_LABEL: Record<string, string> = { happy: "Positive", negative: "Negative", edge: "Edge" };
 
 /** 125 → "02:05" (video timestamps). */
 export function clock(sec: number): string {

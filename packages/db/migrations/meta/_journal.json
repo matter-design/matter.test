@@ -29,6 +29,20 @@
       "when": 1794275955333,
       "tag": "0003_agent_instructions",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794282055857,
+      "tag": "0004_business_scenarios",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794284947697,
+      "tag": "0005_user_stories",
+      "breakpoints": true
     }
   ]
 }

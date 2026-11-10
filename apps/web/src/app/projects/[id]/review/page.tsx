@@ -9,7 +9,7 @@ import { StepsEditor } from "./StepsEditor";
 
 export const dynamic = "force-dynamic";
 
-type Kind = "tc" | "req" | "plan";
+type Kind = "tc" | "req" | "plan" | "story";
 type Item = { kind: Kind; id: string; label: string; title: string; meta: string; state: string };
 
 function Trace({ items, empty }: { items: Passage[]; empty: string }) {
@@ -68,6 +68,10 @@ export default async function ReviewInbox({ params, searchParams }: { params: Pr
   if (tree && pending(tree.plan.status)) {
     items.push({ kind: "plan", id: tree.plan.id, label: "Test plan", title: `${tree.plan.name}, version ${tree.plan.version}`, meta: `${plural(tree.plan.body?.risks.length ?? 0, "risk area")} · ${plural(tree.scenarios.length, "scenario")}`, state: tree.plan.status });
   }
+  for (const st of tree?.stories ?? []) {
+    if (pending(st.reviewState))
+      items.push({ kind: "story", id: st.id, label: `User story · ${st.key}`, title: st.title, meta: `${st.priority}${st.critical ? " · critical" : ""} · ${plural(tree!.scenarios.filter((x) => x.storyId === st.id).length, "scenario")}`, state: st.reviewState });
+  }
   for (const c of cases) {
     if (pending(c.reviewState)) items.push({ kind: "tc", id: c.id, label: `Test case · ${c.key}`, title: c.title, meta: `${plural(c.steps.length, "step")} · ${c.scenario.priority} ${KIND_LABEL[c.scenario.kind] ?? ""}${c.automationCandidate ? " · automation candidate" : ""}`, state: c.reviewState });
   }
@@ -82,6 +86,10 @@ export default async function ReviewInbox({ params, searchParams }: { params: Pr
       const c = cases.find((x) => x.id === itemId);
       return c && { kind, id: c.id, label: `Test case · ${c.key}`, title: c.title, meta: "", state: c.reviewState };
     }
+    if (kind === "story") {
+      const st = tree?.stories.find((x) => x.id === itemId);
+      return st && { kind, id: st.id, label: `User story · ${st.key}`, title: st.title, meta: "", state: st.reviewState };
+    }
     if (kind === "req") {
       const r = reqs.find((x) => x.id === itemId);
       return r && { kind, id: r.id, label: `Requirement · ${r.key}`, title: r.title, meta: "", state: r.reviewState };
@@ -94,8 +102,18 @@ export default async function ReviewInbox({ params, searchParams }: { params: Pr
   // Detail data for the selected item.
   const selCase = sel?.kind === "tc" ? cases.find((c) => c.id === sel.id) : undefined;
   const selReq = sel?.kind === "req" ? reqs.find((r) => r.id === sel.id) : undefined;
+  const selStory = sel?.kind === "story" ? tree?.stories.find((x) => x.id === sel.id) : undefined;
+  const storyReqs: RequirementRow[] = selStory ? selStory.requirementIds.map((k) => reqByKey.get(k)).filter((r): r is RequirementRow => !!r) : [];
+  const storyScenarios = selStory ? (tree?.scenarios.filter((x) => x.storyId === selStory.id) ?? []) : [];
+  const storyOfCase = selCase?.scenario.storyId ? tree?.stories.find((x) => x.id === selCase.scenario.storyId) : undefined;
   const caseReqs: RequirementRow[] = selCase ? selCase.scenario.requirementIds.map((k) => reqByKey.get(k)).filter((r): r is RequirementRow => !!r) : [];
-  const traceIds = selCase ? (selCase.sourceChunkIds.length ? selCase.sourceChunkIds : caseReqs.flatMap((r) => r.sourceChunkIds)) : selReq ? selReq.sourceChunkIds : [];
+  const traceIds = selCase
+    ? selCase.sourceChunkIds.length
+      ? selCase.sourceChunkIds
+      : caseReqs.flatMap((r) => r.sourceChunkIds)
+    : selReq
+      ? selReq.sourceChunkIds
+      : storyReqs.flatMap((r) => r.sourceChunkIds.slice(0, 1));
   const trace = await passages(traceIds.slice(0, 4));
   const editing = sp.edit === "1" && !!selCase;
 
@@ -135,8 +153,17 @@ export default async function ReviewInbox({ params, searchParams }: { params: Pr
               <>
                 <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
                   <div className="stack" style={{ gap: 4, minWidth: 0 }}>
-                    <span className="small muted">{selCase.key} · {selCase.scenario.title} ({selCase.scenario.priority}, {KIND_LABEL[selCase.scenario.kind]})</span>
+                    <span className="small muted">
+                      {selCase.key}
+                      {storyOfCase ? <> · <Link href={hrefOf({ kind: "story", id: storyOfCase.id })}>{storyOfCase.key} {storyOfCase.title}</Link></> : null} · {selCase.scenario.title} ({selCase.scenario.priority}, {KIND_LABEL[selCase.scenario.kind]})
+                    </span>
                     <h2 style={{ fontSize: 20, fontWeight: 700 }}>{selCase.title}</h2>
+                    {selCase.scenario.situation && (
+                      <span className="small" style={{ color: "var(--ink-2)" }}>
+                        {selCase.scenario.actor ? <strong>{selCase.scenario.actor}</strong> : null}{selCase.scenario.actor ? " " : ""}{selCase.scenario.situation}
+                        {selCase.scenario.outcome ? <> → {selCase.scenario.outcome}</> : null}
+                      </span>
+                    )}
                   </div>
                   <span className={`pill status-${selCase.reviewState}`}>{REVIEW_LABEL[selCase.reviewState]}{selCase.edited ? " · edited" : ""}</span>
                 </div>
@@ -169,6 +196,45 @@ export default async function ReviewInbox({ params, searchParams }: { params: Pr
               </>
             )}
 
+            {selStory && (
+              <>
+                <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div className="stack" style={{ gap: 4, minWidth: 0 }}>
+                    <span className="small muted">User story · {selStory.key} · {selStory.priority}{selStory.critical ? " · critical" : ""}</span>
+                    <h2 style={{ fontSize: 20, fontWeight: 700 }}>{selStory.title}</h2>
+                  </div>
+                  <span className={`pill status-${selStory.reviewState}`}>{REVIEW_LABEL[selStory.reviewState]}</span>
+                </div>
+                <p className="story-text">
+                  <strong>As a</strong> {selStory.actor}, <strong>I want to</strong> {selStory.want}
+                  {selStory.soThat ? <>, <strong>so that</strong> {selStory.soThat}</> : null}.
+                </p>
+                {selStory.critical && selStory.criticalWhy && <span className="small" style={{ color: "var(--ink-2)" }}>Why it&apos;s critical: {selStory.criticalWhy}</span>}
+                <div className="stack" style={{ gap: 4 }}>
+                  <span className="kv-label">Acceptance criteria</span>
+                  {selStory.acceptanceCriteria.length ? <ul className="ul">{selStory.acceptanceCriteria.map((a, i) => <li key={i}>{a}</li>)}</ul> : <span className="small muted">None stated.</span>}
+                </div>
+                <div className="stack" style={{ gap: 4 }}>
+                  <span className="kv-label">Covers</span>
+                  {storyReqs.map((r) => (
+                    <Link key={r.id} className="small" href={hrefOf({ kind: "req", id: r.id })}>{r.key} {r.title}</Link>
+                  ))}
+                </div>
+                <div className="stack" style={{ gap: 6 }}>
+                  <span className="kv-label">Scenarios</span>
+                  {storyScenarios.map((x) => (
+                    <span key={x.id} className="row small" style={{ gap: 8, flexWrap: "nowrap", alignItems: "flex-start" }}>
+                      <span className={`pill kind-${x.kind}`}>{KIND_LABEL[x.kind] ?? x.kind}</span>
+                      <span>{x.title} · {x.priority} · {plural(x.cases.length, "case")}</span>
+                    </span>
+                  ))}
+                  {!storyScenarios.length && <span className="small muted">None yet.</span>}
+                </div>
+                <Trace items={trace} empty="No passage recorded." />
+                <Decide kind="story" id={selStory.id} state={selStory.reviewState} />
+              </>
+            )}
+
             {selReq && (
               <>
                 <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -188,7 +254,7 @@ export default async function ReviewInbox({ params, searchParams }: { params: Pr
                 <div className="stack" style={{ gap: 4 }}>
                   <span className="kv-label">Scenarios in the current plan</span>
                   {tree?.scenarios.filter((s) => s.requirementIds.includes(selReq.key)).map((s) => (
-                    <span key={s.id} className="small">{s.title} · {plural(s.cases.length, "case")}</span>
+                    <span key={s.id} className="small">{s.title} · {KIND_LABEL[s.kind] ?? s.kind} · {plural(s.cases.length, "case")}</span>
                   ))}
                   {!tree?.scenarios.some((s) => s.requirementIds.includes(selReq.key)) && <span className="small muted">None yet.</span>}
                 </div>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
-import { Extraction, PlanDraft, resolveExtraction, resolvePlan, type ChunkRefs } from "../src/schemas";
+import { Extraction, PlanDraft, coverageGaps, criticalKeys, resolveExtraction, resolvePlan, resolveStories, storyGaps, type ChunkRefs } from "../src/schemas";
 
 const refs: ChunkRefs = new Map([
   ["c1", "chunk-a"],
@@ -85,7 +85,9 @@ const draft = (scenarios: unknown[]): z.infer<typeof PlanDraft> =>
     scope: ["One-page checkout", " "],
     outOfScope: ["Gateway internals"],
     risks: [{ area: "Payment hand-off", risk: "high", why: "Revenue", priority: "P0" }],
-    scenarios,
+    criticalRequirements: [],
+    stories: [],
+    scenarios: scenarios.map((x) => ({ storyRef: "S1", actor: "Guest shopper", situation: "Checks out", outcome: "Order placed", ...(x as object) })),
   });
 
 describe("PlanDraft schema", () => {
@@ -125,3 +127,57 @@ describe("resolvePlan", () => {
     expect(report.droppedTestCases).toBe(2); // the incomplete case, and the case in the made-up scenario
   });
 });
+
+describe("business scenarios and coverage", () => {
+  const known = new Set(["REQ-01", "REQ-02", "REQ-03"]);
+
+  it("keeps who, situation and outcome, and the critical requirements the plan names", () => {
+    const raw = { ...draft([{ title: " Guest applies an expired code ", actor: " Guest shopper ", situation: "Applies SPRING10, expired yesterday", outcome: "Total unchanged; told the code expired", priority: "P1", kind: "negative", requirementKeys: ["REQ-02"], testCases: [tc()] }]), criticalRequirements: [{ key: "req-02", why: "Lost revenue" }, { key: "REQ-99", why: "?" }, { key: "REQ-02", why: "dup" }] };
+    const { scenarios, critical } = resolvePlan(raw, known, refs);
+    expect(scenarios[0]).toMatchObject({ title: "Guest applies an expired code", actor: "Guest shopper", situation: "Applies SPRING10, expired yesterday", outcome: "Total unchanged; told the code expired" });
+    expect(critical).toEqual([{ key: "REQ-02", why: "Lost revenue" }]);
+  });
+
+  it("needs a positive scenario for every requirement and a negative one for every critical requirement", () => {
+    const scen = [
+      { kind: "happy" as const, requirementKeys: ["REQ-01", "REQ-02"] },
+      { kind: "edge" as const, requirementKeys: ["REQ-02", "REQ-03"] },
+    ];
+    expect(coverageGaps(["REQ-01", "REQ-02", "REQ-03"], new Set(["REQ-01", "REQ-02"]), scen)).toEqual([
+      { key: "REQ-01", missing: "negative" },
+      { key: "REQ-02", missing: "negative" },
+      { key: "REQ-03", missing: "positive" },
+    ]);
+    expect(coverageGaps(["REQ-01"], new Set(["REQ-01"]), [{ kind: "happy", requirementKeys: ["REQ-01"] }, { kind: "negative", requirementKeys: ["REQ-01"] }])).toEqual([]);
+  });
+
+  it("treats requirements under P0 or P1 scenarios as critical even if the plan forgot to list them", () => {
+    const keys = criticalKeys([{ key: "REQ-03" }], [{ priority: "P1", requirementKeys: ["REQ-01"] }, { priority: "P2", requirementKeys: ["REQ-02"] }]);
+    expect([...keys].sort()).toEqual(["REQ-01", "REQ-03"]);
+  });
+});
+
+describe("user stories", () => {
+  const known = new Set(["REQ-01", "REQ-02", "REQ-03"]);
+  const story = (o: Record<string, unknown> = {}) => ({ ref: "S1", title: "Book a fitting", actor: "customer", want: "book a fitting at my store", soThat: "the store expects me", acceptanceCriteria: ["Store is required", " ", "Store is required"], requirementKeys: ["req-01", "REQ-02", "REQ-99"], priority: "P2", critical: false, criticalWhy: "", ...o });
+
+  it("keeps stories that cover known requirements and say who, what and why", () => {
+    const out = resolveStories([story(), story({ ref: "s1" }), story({ ref: "S2", requirementKeys: ["REQ-99"] }), story({ ref: "S3", want: " " }), story({ ref: "S4", priority: "P1" })] as never, known);
+    expect(out.map((s) => s.ref)).toEqual(["S1", "S4"]); // duplicate ref, no known requirement and no "want" are dropped
+    expect(out[0]).toMatchObject({ requirementKeys: ["REQ-01", "REQ-02"], acceptanceCriteria: ["Store is required"], critical: false, criticalWhy: null });
+    expect(out[1]!.critical).toBe(true); // a P1 story counts as critical even if not marked
+  });
+
+  it("links scenarios to stories and unlinks those naming a story that doesn't exist", () => {
+    const raw = { ...draft([{ title: "Books at Penrith", storyRef: "s1", priority: "P1", kind: "happy", requirementKeys: ["REQ-01"], testCases: [tc()] }, { title: "Orphan", storyRef: "S9", priority: "P2", kind: "edge", requirementKeys: ["REQ-01"], testCases: [tc()] }]), stories: [story()] };
+    const { stories, scenarios } = resolvePlan(raw as never, known, refs);
+    expect(stories.map((s) => s.ref)).toEqual(["S1"]);
+    expect(scenarios.map((s) => [s.title, s.storyRef])).toEqual([["Books at Penrith", "S1"], ["Orphan", null]]);
+  });
+
+  it("needs a positive scenario per story and a negative one per critical story", () => {
+    const gaps = storyGaps([{ ref: "S1", critical: true }, { ref: "S2", critical: false }, { ref: "S3", critical: true }], [{ kind: "happy", storyRef: "S1" }, { kind: "edge", storyRef: "S2" }, { kind: "happy", storyRef: "S3" }, { kind: "negative", storyRef: "S3" }]);
+    expect(gaps).toEqual([{ key: "S1", missing: "negative" }, { key: "S2", missing: "positive" }]);
+  });
+});
+

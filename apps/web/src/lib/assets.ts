@@ -1,13 +1,14 @@
 import "server-only";
 import { and, asc, desc, eq, gte, inArray, ne, sql } from "drizzle-orm";
 import { loomLinkAt, type ChunkLocator } from "@mattertest/core";
-import { clientQuestions, requirements, runs, scenarios, sourceChunks, sources, tasks, testCases, testPlans } from "@mattertest/db";
+import { clientQuestions, requirements, runs, scenarios, sourceChunks, sources, tasks, testCases, testPlans, userStories } from "@mattertest/db";
 import { db } from "@/lib/server";
 
 export type SourceRow = typeof sources.$inferSelect;
 export type RequirementRow = typeof requirements.$inferSelect;
 export type PlanRow = typeof testPlans.$inferSelect;
 export type ScenarioRow = typeof scenarios.$inferSelect;
+export type StoryRow = typeof userStories.$inferSelect;
 export type TestCaseRow = typeof testCases.$inferSelect;
 export type QuestionRow = typeof clientQuestions.$inferSelect;
 
@@ -28,7 +29,7 @@ export async function liveRequirements(projectId: string): Promise<RequirementRo
     .orderBy(asc(requirements.key));
 }
 
-export type PlanTree = { plan: PlanRow; scenarios: (ScenarioRow & { cases: TestCaseRow[] })[] };
+export type PlanTree = { plan: PlanRow; stories: StoryRow[]; scenarios: (ScenarioRow & { cases: TestCaseRow[] })[] };
 
 /** The newest plan that hasn't been superseded, with its scenarios and test cases. */
 export async function currentPlan(projectId: string): Promise<PlanTree | null> {
@@ -39,9 +40,12 @@ export async function currentPlan(projectId: string): Promise<PlanTree | null> {
     .orderBy(desc(testPlans.version))
     .limit(1);
   if (!plan) return null;
-  const scen = await db.select().from(scenarios).where(eq(scenarios.planId, plan.id)).orderBy(asc(scenarios.position));
+  const [scen, stories] = await Promise.all([
+    db.select().from(scenarios).where(eq(scenarios.planId, plan.id)).orderBy(asc(scenarios.position)),
+    db.select().from(userStories).where(eq(userStories.planId, plan.id)).orderBy(asc(userStories.position)),
+  ]);
   const cases = scen.length ? await db.select().from(testCases).where(inArray(testCases.scenarioId, scen.map((s) => s.id))).orderBy(asc(testCases.key)) : [];
-  return { plan, scenarios: scen.map((s) => ({ ...s, cases: cases.filter((c) => c.scenarioId === s.id) })) };
+  return { plan, stories, scenarios: scen.map((s) => ({ ...s, cases: cases.filter((c) => c.scenarioId === s.id) })) };
 }
 
 export async function projectQuestions(projectId: string): Promise<QuestionRow[]> {

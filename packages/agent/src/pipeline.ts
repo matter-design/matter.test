@@ -2,9 +2,9 @@ import type { SourceType } from "@mattertest/core";
 import { chunkBlocks, chunkCues, type Chunk } from "./chunk";
 import { LoomTranscriptUnavailable, fetchLoomTranscript, type LoomVideo } from "./loom";
 import { parseDocx, parseHtml, parseMarkdown, parsePdf, parseTranscript } from "./parse";
-import { EXTRACT_SYSTEM, PLAN_SYSTEM, extractUser, planUser, type Passage, type PlanRequirement } from "./prompts";
-import { Extraction, PlanDraft, resolveExtraction, resolvePlan, type ChunkRefs } from "./schemas";
-import type { StructuredModel } from "./claude";
+import { EXTRACT_SYSTEM, PLAN_SYSTEM, extractUser, planUser, topUpUser, type Passage, type PlanRequirement } from "./prompts";
+import { Extraction, PlanDraft, ScenarioTopUp, coverageGaps, criticalKeys, resolveExtraction, resolvePlan, resolveScenarios, storyGaps, type ChunkRefs, type CoverageGap } from "./schemas";
+import { addUsage, type StructuredModel } from "./claude";
 
 export type ReadInput = {
   type: SourceType;
@@ -108,6 +108,8 @@ export type ProjectContext = {
   siteUrl?: string | null;
   /** The team's standing instructions to the agent for this project. */
   instructions?: string | null;
+  /** Matter Design's QA guidelines (docs/qa-guidelines.md), for every project. */
+  guidelines?: string | null;
 };
 
 /** Ask Claude for the requirements and client questions in one source. */
@@ -117,6 +119,7 @@ export async function extractRequirements(model: StructuredModel, ctx: ProjectCo
   const res = await model({
     schema: Extraction,
     system: EXTRACT_SYSTEM,
+    guidelines: ctx.guidelines,
     user: extractUser({ ...ctx, sourceName: source.name, sourceType: source.type, sourceNote: source.note, passages }),
     effort: "high",
   });
@@ -141,11 +144,48 @@ export async function draftPlan(
   const { refs, refOf } = refChunks(chunks);
   const passages: Passage[] = chunks.map((c) => ({ ref: refOf.get(c.id)!, sourceName: c.sourceName, sourceType: c.sourceType, sectionPath: c.sectionPath, locator: c.locator, text: c.text }));
   const reqs: PlanRequirement[] = requirements.map((r) => ({ ...r, passageRefs: r.sourceChunkIds.map((id) => refOf.get(id)).filter((x): x is string => !!x) }));
-  const res = await model({
-    schema: PlanDraft,
-    system: PLAN_SYSTEM,
-    user: planUser({ ...ctx, requirements: reqs, passages, openQuestions, sourceNotes }),
-    effort: "high",
-  });
-  return { ...resolvePlan(res.data, new Set(requirements.map((r) => r.key)), refs), usage: res.usage, model: res.model };
+  const context = { ...ctx, requirements: reqs, passages, openQuestions, sourceNotes };
+  const keys = requirements.map((r) => r.key);
+  const known = new Set(keys);
+  const res = await model({ schema: PlanDraft, system: PLAN_SYSTEM, guidelines: ctx.guidelines, user: planUser(context), effort: "high" });
+  const drafted = resolvePlan(res.data, known, refs);
+  let usage = res.usage;
+
+  // Default coverage: a positive scenario for every story and requirement, and a negative one for every critical
+  // story and requirement. Anything missing gets one smaller follow-up call that drafts only those scenarios.
+  const stories = drafted.stories;
+  const storyRefs = new Set(stories.map((x) => x.ref));
+  const critical = criticalKeys(drafted.critical, drafted.scenarios);
+  const gapsIn = (sc: typeof drafted.scenarios) => [...storyGaps(stories, sc), ...coverageGaps(keys, critical, sc)];
+  const before = gapsIn(drafted.scenarios);
+  let scenarios = drafted.scenarios;
+  let report = drafted.report;
+  if (before.length) {
+    const top = await model({
+      schema: ScenarioTopUp,
+      system: PLAN_SYSTEM,
+      guidelines: ctx.guidelines,
+      user: topUpUser({ ...context, stories, existing: scenarios.map((x) => ({ title: x.title, kind: x.kind, requirementKeys: x.requirementKeys, storyRef: x.storyRef })), gaps: before }),
+      effort: "medium",
+    });
+    usage = addUsage(usage, top.usage);
+    const added = resolveScenarios(top.data.scenarios, known, refs, storyRefs);
+    scenarios = [...scenarios, ...added.scenarios];
+    report = {
+      droppedScenarios: report.droppedScenarios + added.report.droppedScenarios,
+      droppedTestCases: report.droppedTestCases + added.report.droppedTestCases,
+      unknownRefs: report.unknownRefs + added.report.unknownRefs,
+      unknownRequirements: report.unknownRequirements + added.report.unknownRequirements,
+    };
+  }
+  const gaps: CoverageGap[] = before.length ? gapsIn(scenarios) : [];
+  const criticalList = [...critical].sort().map((key) => ({ key, why: drafted.critical.find((c) => c.key === key)?.why ?? "Covered by a P0 or P1 scenario" }));
+  return {
+    plan: { ...drafted.plan, critical: criticalList, gaps },
+    stories,
+    scenarios,
+    report: { ...report, gapsFound: before.length, gapsFilled: before.length - gaps.length },
+    usage,
+    model: res.model,
+  };
 }

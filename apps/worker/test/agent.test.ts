@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { asc, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { confluencePageUrl, type PlanJob } from "@mattertest/core";
-import { clientQuestions, clients, createDb, projects, requirements, runs, scenarios, sourceChunks, sources, tasks, testCases, testPlans, type Db } from "@mattertest/db";
+import { clientQuestions, clients, createDb, projects, requirements, runs, scenarios, sourceChunks, sources, tasks, testCases, testPlans, userStories, type Db } from "@mattertest/db";
 import { Extraction, NOT_SET_UP, PlanDraft, type ConfluenceConfig, type Embedder, type StructuredModel } from "@mattertest/agent";
 import { runConfluence, runIngest, runPlan, type AgentDeps } from "../src/agent";
 
@@ -60,9 +60,15 @@ const model: StructuredModel = async (req) => {
     scope: ["Checkout"],
     outOfScope: ["Gateway internals"],
     risks: [{ area: "Promo codes", risk: "high", why: "Revenue", priority: "P0" }],
+    criticalRequirements: [],
+    stories: [{ ref: "S1", title: "Check out with a discount", actor: "guest shopper", want: "check out with the right discounts and shipping", soThat: "I pay the right price", acceptanceCriteria: ["Totals are right"], requirementKeys: keys.map((k) => k.key), priority: "P2", critical: false, criticalWhy: "" }],
     scenarios: keys.map((k) => ({
+      storyRef: "S1",
       title: `Scenario for ${k.key}`,
-      priority: "P1",
+      actor: "Guest shopper",
+      situation: `Meets ${k.key} at checkout`,
+      outcome: "The order goes through",
+      priority: "P2",
       kind: "happy",
       requirementKeys: [k.key],
       testCases: [{ title: `Case for ${k.key}`, preconditions: "", testData: "", steps: [{ action: "Do the thing", expected: "It works" }], automationCandidate: false, chunkIds: [k.ref] }],
@@ -123,6 +129,11 @@ describe.skipIf(!hasDb)("agent jobs", () => {
     expect(plan).toMatchObject({ version: 1, status: "draft", sourceIds: [job.sourceId] });
     const scen = await db.select().from(scenarios).where(eq(scenarios.planId, plan!.id));
     expect(scen.map((s) => s.requirementIds)).toEqual([["REQ-01"], ["REQ-02"]]);
+    expect(scen[0]).toMatchObject({ actor: "Guest shopper", situation: "Meets REQ-01 at checkout", outcome: "The order goes through" });
+    expect(plan!.body).toMatchObject({ critical: [], gaps: [] });
+    const stories = await db.select().from(userStories).where(eq(userStories.planId, plan!.id));
+    expect(stories.map((x) => [x.key, x.title, x.requirementIds])).toEqual([["US-01", "Check out with a discount", ["REQ-01", "REQ-02"]]]);
+    expect(scen.every((x) => x.storyId === stories[0]!.id)).toBe(true);
     const cases = await db.select().from(testCases).where(inArray(testCases.scenarioId, scen.map((s) => s.id))).orderBy(asc(testCases.key));
     expect(cases.map((c) => c.key)).toEqual(["TC-001", "TC-002"]);
     expect(cases[0]!.sourceChunkIds).toEqual(reqs[0]!.sourceChunkIds);
@@ -145,6 +156,7 @@ describe.skipIf(!hasDb)("agent jobs", () => {
     const newScen = await db.select().from(scenarios).where(eq(scenarios.planId, plans[1]!.id));
     const newCases = await db.select().from(testCases).where(inArray(testCases.scenarioId, newScen.map((s) => s.id))).orderBy(asc(testCases.key));
     expect(newCases.map((c) => c.key)).toEqual(["TC-003", "TC-004"]);
+    expect((await db.select({ key: userStories.key }).from(userStories).where(eq(userStories.planId, plans[1]!.id))).map((x) => x.key)).toEqual(["US-02"]);
   });
 
   it("parks a Loom source that has no public transcript, then reads an attached one", async () => {
@@ -292,28 +304,32 @@ describe.skipIf(!hasDb)("agent jobs", () => {
     });
   });
 
-  it("gives Claude the project's instructions and the source's note, and records them on the runs", async () => {
+  it("gives Claude the QA guidelines, the project's instructions and the source's note, and records them on the runs", async () => {
     const projectId = await setup();
     await db.update(projects).set({ agentInstructions: "Focus on promo codes. Treat payments as P0." }).where(eq(projects.id, projectId));
     mkdirSync(join(artefacts, "sources", projectId), { recursive: true });
     writeFileSync(join(artefacts, "sources", projectId, "n.md"), brief);
     const job = await addSource(projectId, { fileUri: `sources/${projectId}/n.md`, meta: { note: "Version 1.2, signed off by the client." } });
     const seen: string[] = [];
+    const guides: (string | null | undefined)[] = [];
     const spy: StructuredModel = async (req) => {
       seen.push(req.user);
+      guides.push(req.guidelines);
       return model(req);
     };
     const planned: PlanJob[] = [];
-    await runIngest(db, { ...job, thenPlan: true }, { model: spy, embedder: null, queuePlan: async (j) => void planned.push(j) });
-    await runPlan(db, planned[0]!, { model: spy, embedder: null, queuePlan: async () => {} });
+    const guide = async () => ({ text: "- P0 means money or bookings.", version: "abc123def456", path: "qa.md" });
+    await runIngest(db, { ...job, thenPlan: true }, { model: spy, embedder: null, guidelines: guide, queuePlan: async (j) => void planned.push(j) });
+    await runPlan(db, planned[0]!, { model: spy, embedder: null, guidelines: guide, queuePlan: async () => {} });
 
     expect(seen).toHaveLength(2);
+    expect(guides).toEqual(["- P0 means money or bookings.", "- P0 means money or bookings."]);
     for (const u of seen) expect(u).toContain("<team_instructions>\nFocus on promo codes. Treat payments as P0.\n</team_instructions>");
     expect(seen[0]).toContain("<source_note>\nVersion 1.2, signed off by the client.\n</source_note>");
     expect(seen[1]).toContain("- checkout-brief.md: Version 1.2, signed off by the client.");
     const [ingest] = await db.select().from(runs).where(eq(runs.id, job.runId));
-    expect(ingest!.summary).toMatchObject({ instructions: "Focus on promo codes. Treat payments as P0.", sourceNote: "Version 1.2, signed off by the client." });
+    expect(ingest!.summary).toMatchObject({ instructions: "Focus on promo codes. Treat payments as P0.", sourceNote: "Version 1.2, signed off by the client.", guidelinesVersion: "abc123def456" });
     const [plan] = await db.select().from(runs).where(eq(runs.id, planned[0]!.runId));
-    expect(plan!.summary).toMatchObject({ instructions: "Focus on promo codes. Treat payments as P0." });
+    expect(plan!.summary).toMatchObject({ instructions: "Focus on promo codes. Treat payments as P0.", guidelinesVersion: "abc123def456" });
   });
 });

@@ -284,4 +284,10 @@ textarea.input { min-height: 72px; padding: 10px 12px; line-height: 1.45; resize
 .chunk-hl { background: #fff7e0; border-left: 3px solid #e0a100; }
 .chunk-text { margin: 0; font-size: 14px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .gap-pill { background: var(--crit-bg); color: var(--crit); font-weight: 700; }
+.kind-happy { background: var(--good-bg); color: var(--good); }
+.kind-negative { background: var(--high-bg); color: var(--high); }
+.kind-edge { background: var(--accent-tint); color: var(--accent-hover); }
+.story-text { margin: 0; font-size: 15px; line-height: 1.55; }
+.story-card { gap: 12px; }
+.group-head { margin: 0; padding: 12px 18px; font-size: 13px; font-weight: 700; border-bottom: 1px solid var(--rule); background: var(--surface-2, #f6f7f9); border-radius: inherit; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .ul { margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.6; }

@@ -41,6 +41,8 @@ export function addUsage(a: Usage, b: Usage): Usage {
 export type StructuredRequest<S extends z.ZodTypeAny> = {
   schema: S;
   system: string;
+  /** Matter Design's QA guidelines, sent as a second system block after the fixed instructions (both cached). */
+  guidelines?: string | null;
   user: string;
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   maxTokens?: number;
@@ -66,7 +68,7 @@ export class AgentError extends Error {
  * and opts into server-side fallbacks so a classifier refusal is retried on Anthropic's recommended model.
  */
 export function claudeModel(client = new Anthropic({ maxRetries: 3 }), model = AGENT_MODEL): StructuredModel {
-  return async ({ schema, system, user, effort = "high", maxTokens = 64000 }) => {
+  return async ({ schema, system, guidelines, user, effort = "high", maxTokens = 64000 }) => {
     const stream = client.beta.messages.stream({
       model,
       max_tokens: maxTokens,
@@ -74,7 +76,7 @@ export function claudeModel(client = new Anthropic({ maxRetries: 3 }), model = A
       fallbacks: "default",
       thinking: { type: "adaptive" },
       output_config: { effort, format: zodOutputFormat(schema) },
-      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+      system: systemBlocks(system, guidelines),
       messages: [{ role: "user", content: user }],
     });
     let msg: Anthropic.Beta.BetaMessage;
@@ -97,6 +99,18 @@ export function claudeModel(client = new Anthropic({ maxRetries: 3 }), model = A
     if (!parsed.success) throw new AgentError(`Claude's answer didn't match the expected shape: ${parsed.error.issues[0]?.message}`, usage);
     return { data: parsed.data, usage, model: msg.model };
   };
+}
+
+/**
+ * The fixed instructions, then the team's guidelines when there are any. The cache marker sits on the last block,
+ * so both are cached together and a guide edit only re-caches once.
+ */
+export function systemBlocks(system: string, guidelines?: string | null): Anthropic.Beta.BetaTextBlockParam[] {
+  const g = guidelines?.trim();
+  const blocks: Anthropic.Beta.BetaTextBlockParam[] = [{ type: "text", text: system }];
+  if (g) blocks.push({ type: "text", text: `<qa_guidelines>\n${g}\n</qa_guidelines>` });
+  blocks[blocks.length - 1]!.cache_control = { type: "ephemeral" };
+  return blocks;
 }
 
 const hasCredentials = () => !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_PROFILE);

@@ -40,10 +40,27 @@ export const DraftTestCase = z.object({
   chunkIds: z.array(z.string()).describe("Ids of the passages (c1, c2…) the steps and expected results come from"),
 });
 
-export const DraftScenario = z.object({
-  title: z.string(),
+export const DraftStory = z.object({
+  ref: z.string().describe("Short id for this story within the plan: S1, S2…"),
+  title: z.string().describe("The user goal in a few words, e.g. 'Book a fitting at my store'"),
+  actor: z.string().describe("As a … (the person, in the client's terms)"),
+  want: z.string().describe("I want to … (what they're trying to do)"),
+  soThat: z.string().describe("so that … (the benefit to them or the business)"),
+  acceptanceCriteria: z.array(z.string()).describe("Observable conditions, as plain bullets, that show the story is done"),
+  requirementKeys: z.array(z.string()).describe("Keys of the requirements this story covers, e.g. REQ-03"),
   priority: Priority,
-  kind: z.enum(["happy", "negative", "edge"]),
+  critical: z.boolean().describe("True if a failure would be P0 or P1"),
+  criticalWhy: z.string().describe("For a critical story, what a failure would cost; otherwise empty"),
+});
+
+export const DraftScenario = z.object({
+  storyRef: z.string().describe("The ref (S1, S2…) of the user story this scenario is an example of"),
+  title: z.string().describe("The business scenario in a line, e.g. 'Guest shopper applies an expired promo code at checkout'"),
+  actor: z.string().describe("Who is acting, in the client's terms: 'Guest shopper', 'Signed-in customer', 'Store manager'"),
+  situation: z.string().describe("The business situation: what the actor is trying to do and the conditions that matter"),
+  outcome: z.string().describe("The business outcome that shows it worked, or for a negative scenario that it failed safely"),
+  priority: Priority,
+  kind: z.enum(["happy", "negative", "edge"]).describe("happy = positive path that should succeed; negative = invalid input, broken rule or failure that must be handled; edge = limits and unusual combinations"),
   requirementKeys: z.array(z.string()).describe("Keys of the requirements covered, e.g. REQ-03"),
   testCases: z.array(DraftTestCase),
 });
@@ -61,9 +78,17 @@ export const PlanDraft = z.object({
       priority: Priority,
     }),
   ),
+  criticalRequirements: z
+    .array(z.object({ key: z.string().describe("Requirement key, e.g. REQ-03"), why: z.string().describe("What a failure would cost: revenue, bookings, legal, data, reputation") }))
+    .describe("Requirements whose failure would be P0 or P1. Each needs a negative scenario as well as a positive one"),
+  stories: z.array(DraftStory).describe("The user stories, before the scenarios: usually 3 to 8 real user goals"),
   scenarios: z.array(DraftScenario),
 });
 export type PlanDraft = z.infer<typeof PlanDraft>;
+
+/** The gap-filling pass: only the scenarios that were missing. */
+export const ScenarioTopUp = z.object({ scenarios: z.array(DraftScenario) });
+export type ScenarioTopUp = z.infer<typeof ScenarioTopUp>;
 
 /* ---------- Resolving citations ---------- */
 
@@ -131,7 +156,31 @@ export function resolveExtraction(raw: Extraction, chunkRefs: ChunkRefs) {
 }
 
 export type ResolvedTestCase = Omit<TestCaseInput, "requirementIds" | "priority" | "kind"> & { sourceChunkIds: string[] };
-export type ResolvedScenario = { title: string; priority: TestCaseInput["priority"]; kind: TestCaseInput["kind"]; requirementKeys: string[]; testCases: ResolvedTestCase[] };
+export type ResolvedStory = {
+  ref: string;
+  title: string;
+  actor: string;
+  want: string;
+  soThat: string;
+  acceptanceCriteria: string[];
+  requirementKeys: string[];
+  priority: TestCaseInput["priority"];
+  critical: boolean;
+  criticalWhy: string | null;
+};
+
+export type ResolvedScenario = {
+  /** The story's ref (S1…), or null when the scenario named a story that doesn't exist. */
+  storyRef: string | null;
+  title: string;
+  actor: string | null;
+  situation: string | null;
+  outcome: string | null;
+  priority: TestCaseInput["priority"];
+  kind: TestCaseInput["kind"];
+  requirementKeys: string[];
+  testCases: ResolvedTestCase[];
+};
 export type PlanReport = { droppedScenarios: number; droppedTestCases: number; unknownRefs: number; unknownRequirements: number };
 
 /**
@@ -139,9 +188,54 @@ export type PlanReport = { droppedScenarios: number; droppedTestCases: number; u
  * Each case is checked against core's `TestCaseInput`, the shape the review screen and later the sanity runner use.
  */
 export function resolvePlan(raw: PlanDraft, requirementKeys: Set<string>, chunkRefs: ChunkRefs) {
+  const stories = resolveStories(raw.stories ?? [], requirementKeys);
+  const { scenarios, report } = resolveScenarios(raw.scenarios, requirementKeys, chunkRefs, new Set(stories.map((s) => s.ref)));
+  const plan = {
+    name: clean(raw.name) || "Test plan",
+    summary: clean(raw.summary),
+    scope: raw.scope.map(clean).filter(Boolean),
+    outOfScope: raw.outOfScope.map(clean).filter(Boolean),
+    risks: raw.risks.map((r) => ({ ...r, area: clean(r.area), why: clean(r.why) })).filter((r) => r.area),
+  };
+  const critical = new Map<string, string>();
+  for (const c of raw.criticalRequirements ?? []) {
+    const key = c.key.trim().toUpperCase();
+    if (requirementKeys.has(key) && !critical.has(key)) critical.set(key, clean(c.why));
+  }
+  return { plan, stories, scenarios, critical: [...critical].map(([key, why]) => ({ key, why })), report };
+}
+
+/** Keep stories that cover at least one known requirement and say who, what and why; refs are made unique. */
+export function resolveStories(raw: PlanDraft["stories"], requirementKeys: Set<string>): ResolvedStory[] {
+  const out: ResolvedStory[] = [];
+  const refs = new Set<string>();
+  for (const s of raw) {
+    const ref = clean(s.ref).toUpperCase();
+    const keys = uniq(s.requirementKeys.map((k) => k.trim().toUpperCase())).filter((k) => requirementKeys.has(k));
+    const [title, actor, want, soThat] = [s.title, s.actor, s.want, s.soThat].map(clean);
+    if (!ref || refs.has(ref) || !keys.length || !actor || !want || !title) continue;
+    refs.add(ref);
+    out.push({
+      ref,
+      title,
+      actor,
+      want,
+      soThat: soThat ?? "",
+      acceptanceCriteria: uniq(s.acceptanceCriteria.map(clean).filter(Boolean)),
+      requirementKeys: keys,
+      priority: s.priority,
+      critical: s.critical || s.priority === "P0" || s.priority === "P1",
+      criticalWhy: clean(s.criticalWhy) || null,
+    });
+  }
+  return out;
+}
+
+/** Check a list of drafted scenarios the same way: known requirements, complete steps, citations the model was shown. */
+export function resolveScenarios(raw: PlanDraft["scenarios"], requirementKeys: Set<string>, chunkRefs: ChunkRefs, storyRefs: Set<string> = new Set()) {
   const report: PlanReport = { droppedScenarios: 0, droppedTestCases: 0, unknownRefs: 0, unknownRequirements: 0 };
   const scenarios: ResolvedScenario[] = [];
-  for (const s of raw.scenarios) {
+  for (const s of raw) {
     const keys = uniq(s.requirementKeys.map((k) => k.trim().toUpperCase()));
     const known = keys.filter((k) => requirementKeys.has(k));
     report.unknownRequirements += keys.length - known.length;
@@ -172,14 +266,54 @@ export function resolvePlan(raw: PlanDraft, requirementKeys: Set<string>, chunkR
       report.droppedTestCases += testCases.length;
       continue;
     }
-    scenarios.push({ title: clean(s.title), priority: s.priority, kind: s.kind, requirementKeys: known, testCases });
+    const storyRef = clean(s.storyRef ?? "").toUpperCase();
+    scenarios.push({
+      storyRef: storyRefs.has(storyRef) ? storyRef : null,
+      title: clean(s.title),
+      actor: clean(s.actor ?? "") || null,
+      situation: clean(s.situation ?? "") || null,
+      outcome: clean(s.outcome ?? "") || null,
+      priority: s.priority,
+      kind: s.kind,
+      requirementKeys: known,
+      testCases,
+    });
   }
-  const plan = {
-    name: clean(raw.name) || "Test plan",
-    summary: clean(raw.summary),
-    scope: raw.scope.map(clean).filter(Boolean),
-    outOfScope: raw.outOfScope.map(clean).filter(Boolean),
-    risks: raw.risks.map((r) => ({ ...r, area: clean(r.area), why: clean(r.why) })).filter((r) => r.area),
-  };
-  return { plan, scenarios, report };
+  return { scenarios, report };
+}
+
+/* ---------- Coverage rules ---------- */
+
+export type CoverageGap = { key: string; missing: "positive" | "negative" };
+
+/**
+ * The default coverage every plan must meet: each requirement has a positive (happy) scenario, and each critical
+ * requirement also has a negative one. Edge scenarios don't stand in for either.
+ */
+export function coverageGaps(requirementKeys: string[], critical: Set<string>, scenarios: Pick<ResolvedScenario, "kind" | "requirementKeys">[]): CoverageGap[] {
+  const gaps: CoverageGap[] = [];
+  for (const key of requirementKeys) {
+    const kinds = new Set(scenarios.filter((s) => s.requirementKeys.includes(key)).map((s) => s.kind));
+    if (!kinds.has("happy")) gaps.push({ key, missing: "positive" });
+    if (critical.has(key) && !kinds.has("negative")) gaps.push({ key, missing: "negative" });
+  }
+  return gaps;
+}
+
+/** Each story needs a positive scenario, and each critical story a negative one too. Keys are story refs (S1…). */
+export function storyGaps(stories: Pick<ResolvedStory, "ref" | "critical">[], scenarios: Pick<ResolvedScenario, "kind" | "storyRef">[]): CoverageGap[] {
+  const gaps: CoverageGap[] = [];
+  for (const st of stories) {
+    const kinds = new Set(scenarios.filter((s) => s.storyRef === st.ref).map((s) => s.kind));
+    if (!kinds.has("happy")) gaps.push({ key: st.ref, missing: "positive" });
+    if (st.critical && !kinds.has("negative")) gaps.push({ key: st.ref, missing: "negative" });
+  }
+  return gaps;
+}
+
+/** Requirements the plan marked critical, plus any a P0 or P1 scenario covers: the model's priorities count even if it forgot to list them. */
+export function criticalKeys(marked: { key: string }[], scenarios: Pick<ResolvedScenario, "priority" | "requirementKeys">[]): Set<string> {
+  const keys = new Set(marked.map((c) => c.key));
+  for (const s of scenarios) if (s.priority === "P0" || s.priority === "P1") for (const k of s.requirementKeys) keys.add(k);
+  return keys;
 }
