@@ -74,7 +74,7 @@ async function finish(db: Db, taskId: string, runId: string, status: "done" | "f
 
 async function projectContext(db: Db, projectId: string): Promise<ProjectContext> {
   const [row] = await db
-    .select({ project: projects.name, client: clients.name, platform: projects.platform })
+    .select({ project: projects.name, client: clients.name, platform: projects.platform, instructions: projects.agentInstructions })
     .from(projects)
     .innerJoin(clients, eq(clients.id, projects.clientId))
     .where(eq(projects.id, projectId));
@@ -134,7 +134,7 @@ async function ingestSource(db: Db, source: Source, deps: AgentDeps): Promise<In
 
     const ctx = await projectContext(db, source.projectId);
     log("extracting requirements");
-    const extracted = await extractRequirements(deps.model, ctx, { name: meta.title ?? source.meta.title ?? source.name, type: source.type }, storedChunks);
+    const extracted = await extractRequirements(deps.model, ctx, { name: meta.title ?? source.meta.title ?? source.name, type: source.type, note: source.meta.note }, storedChunks);
     usage = extracted.usage;
 
     const existing = await db.select({ key: requirements.key }).from(requirements).where(eq(requirements.projectId, source.projectId));
@@ -178,6 +178,9 @@ async function ingestSource(db: Db, source: Source, deps: AgentDeps): Promise<In
         questions: extracted.questions.length,
         dropped: extracted.report,
         model: extracted.model,
+        // What the agent was told, kept with the run so a reviewer can see why the output looks the way it does.
+        ...(ctx.instructions?.trim() ? { instructions: ctx.instructions.trim() } : {}),
+        ...(source.meta.note ? { sourceNote: source.meta.note } : {}),
       },
     };
   } catch (e) {
@@ -311,6 +314,8 @@ export async function runConfluence(db: Db, job: ConfluenceJob, deps: AgentDeps)
             version: (latest?.version ?? 0) + 1,
             meta: {
               title: page.title,
+              // A note given when adding applies to every page read through it; a re-read keeps the page's last note.
+              ...((job.note ?? latest?.meta.note) ? { note: job.note ?? latest?.meta.note } : {}),
               confluence: { pageId: page.id, version: page.version, webUrl: page.webUrl, rootPageId: root.pageId, ...(isRoot ? { includeChildren: root.includeChildren } : {}) },
             },
             createdBy: job.requestedBy ?? null,
@@ -365,7 +370,7 @@ export async function runPlan(db: Db, job: PlanJob, deps: AgentDeps) {
 
     const sourceIds = [...new Set(reqs.map((x) => x.r.sourceId!))];
     const all = await db
-      .select({ c: sourceChunks, sourceName: sources.name, sourceType: sources.type, title: sql<string | null>`${sources.meta}->>'title'` })
+      .select({ c: sourceChunks, sourceName: sources.name, sourceType: sources.type, title: sql<string | null>`${sources.meta}->>'title'`, note: sql<string | null>`${sources.meta}->>'note'` })
       .from(sourceChunks)
       .innerJoin(sources, eq(sources.id, sourceChunks.sourceId))
       .where(inArray(sourceChunks.sourceId, sourceIds))
@@ -384,6 +389,7 @@ export async function runPlan(db: Db, job: PlanJob, deps: AgentDeps) {
       reqs.map((x) => ({ key: x.r.key, title: x.r.title, text: x.r.text, area: x.r.area, acceptanceCriteria: x.r.acceptanceCriteria, sourceChunkIds: x.r.sourceChunkIds })),
       chunks,
       questions.map((q) => q.q),
+      [...new Map(all.filter((x) => x.note).map((x) => [x.c.sourceId, { source: x.title ?? x.sourceName, note: x.note! }])).values()],
     );
     usage = drafted.usage;
 
@@ -437,6 +443,7 @@ export async function runPlan(db: Db, job: PlanJob, deps: AgentDeps) {
       passages: chunks.length,
       dropped: drafted.report,
       model: drafted.model,
+      ...(ctx.instructions?.trim() ? { instructions: ctx.instructions.trim() } : {}),
     });
   } catch (e) {
     if (e instanceof AgentError) usage = addUsage(usage, e.usage);

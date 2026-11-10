@@ -51,6 +51,8 @@ export const projects = pgTable("projects", {
   slackChannel: text("slack_channel"),
   /** Most pages a site check crawls. Set per project. */
   crawlMaxPages: integer("crawl_max_pages").notNull().default(200),
+  /** The team's standing instructions to the agent when it reads sources and drafts plans (focus, scope, priorities). */
+  agentInstructions: text("agent_instructions"),
   status: text("status").notNull().default("onboarding"),
   createdAt: created(),
 });
@@ -94,6 +96,8 @@ export type SourceMeta = {
   owner?: string;
   transcriptFrom?: "loom" | "upload";
   confluence?: ConfluenceSourceMeta;
+  /** What the team told the agent about this source when adding it ("old v1 brief, only section 4 still applies"). */
+  note?: string;
 };
 
 export const sources = pgTable(

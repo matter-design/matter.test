@@ -291,4 +291,29 @@ describe.skipIf(!hasDb)("agent jobs", () => {
       expect(await live(projectId)).toEqual([]);
     });
   });
+
+  it("gives Claude the project's instructions and the source's note, and records them on the runs", async () => {
+    const projectId = await setup();
+    await db.update(projects).set({ agentInstructions: "Focus on promo codes. Treat payments as P0." }).where(eq(projects.id, projectId));
+    mkdirSync(join(artefacts, "sources", projectId), { recursive: true });
+    writeFileSync(join(artefacts, "sources", projectId, "n.md"), brief);
+    const job = await addSource(projectId, { fileUri: `sources/${projectId}/n.md`, meta: { note: "Version 1.2, signed off by the client." } });
+    const seen: string[] = [];
+    const spy: StructuredModel = async (req) => {
+      seen.push(req.user);
+      return model(req);
+    };
+    const planned: PlanJob[] = [];
+    await runIngest(db, { ...job, thenPlan: true }, { model: spy, embedder: null, queuePlan: async (j) => void planned.push(j) });
+    await runPlan(db, planned[0]!, { model: spy, embedder: null, queuePlan: async () => {} });
+
+    expect(seen).toHaveLength(2);
+    for (const u of seen) expect(u).toContain("<team_instructions>\nFocus on promo codes. Treat payments as P0.\n</team_instructions>");
+    expect(seen[0]).toContain("<source_note>\nVersion 1.2, signed off by the client.\n</source_note>");
+    expect(seen[1]).toContain("- checkout-brief.md: Version 1.2, signed off by the client.");
+    const [ingest] = await db.select().from(runs).where(eq(runs.id, job.runId));
+    expect(ingest!.summary).toMatchObject({ instructions: "Focus on promo codes. Treat payments as P0.", sourceNote: "Version 1.2, signed off by the client." });
+    const [plan] = await db.select().from(runs).where(eq(runs.id, planned[0]!.runId));
+    expect(plan!.summary).toMatchObject({ instructions: "Focus on promo codes. Treat payments as P0." });
+  });
 });

@@ -22,6 +22,13 @@
       "when": 1794212021829,
       "tag": "0002_doc_to_tests",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794275955333,
+      "tag": "0003_agent_instructions",
+      "breakpoints": true
     }
   ]
 }

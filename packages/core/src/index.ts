@@ -159,6 +159,10 @@ export function loomLinkAt(link: string, sec: number | undefined): string {
   return u.toString();
 }
 
+/** Longest note the team can attach to a source, and longest standing instructions for a project (characters). */
+export const AGENT_NOTE_MAX = 1000;
+export const AGENT_INSTRUCTIONS_MAX = 4000;
+
 /** Most pages read when a Confluence page is added with its child pages. */
 export const CONFLUENCE_MAX_PAGES = 50;
 
@@ -219,6 +223,8 @@ export const ConfluenceJob = z.object({
   includeChildren: z.boolean().default(false),
   sync: z.boolean().default(false),
   requestedBy: z.string().optional(),
+  /** The team's note for the agent about the page(s) being added; kept on every page it applies to. */
+  note: z.string().max(AGENT_NOTE_MAX).optional(),
 });
 export type ConfluenceJob = z.infer<typeof ConfluenceJob>;
 

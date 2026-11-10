@@ -6,7 +6,7 @@ import { dirname } from "node:path";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { MAX_UPLOAD_BYTES, UPLOAD_TYPES, artefactPath, confluencePageRef, confluencePageUrl, loomVideoId, type SourceType } from "@mattertest/core";
+import { AGENT_INSTRUCTIONS_MAX, AGENT_NOTE_MAX, MAX_UPLOAD_BYTES, UPLOAD_TYPES, artefactPath, confluencePageRef, confluencePageUrl, loomVideoId, type SourceType } from "@mattertest/core";
 import { clientQuestions, projects, requirements, runs, scenarios, sources, tasks, testCases, testPlans } from "@mattertest/db";
 import { requireUser } from "@/lib/auth";
 import { agentQueue, db } from "@/lib/server";
@@ -34,6 +34,24 @@ async function queueIngest(projectId: string, sourceId: string, title: string, r
     await db.update(sources).set({ status: "failed", error }).where(eq(sources.id, sourceId));
     throw new Error(error);
   }
+}
+
+/** The optional note for the agent sent with a new source, trimmed; or an error if it's too long. */
+function readNote(formData: FormData): { note?: string } | { error: string } {
+  const note = String(formData.get("note") ?? "").trim();
+  if (note.length > AGENT_NOTE_MAX) return { error: `Keep the note for the agent under ${AGENT_NOTE_MAX} characters (it's ${note.length}).` };
+  return note ? { note } : {};
+}
+
+/** The note on the latest earlier version of a document, so a new version keeps it unless the team gives a new one. */
+async function previousNote(projectId: string, match: { name: string } | { uri: string }): Promise<string | undefined> {
+  const [prev] = await db
+    .select({ meta: sources.meta })
+    .from(sources)
+    .where(and(eq(sources.projectId, projectId), "uri" in match ? eq(sources.uri, match.uri) : eq(sources.name, match.name)))
+    .orderBy(desc(sources.version))
+    .limit(1);
+  return prev?.meta.note;
 }
 
 async function projectExists(projectId: string) {
@@ -78,6 +96,8 @@ export async function uploadSource(_prev: FormState, formData: FormData): Promis
   if (!(await projectExists(projectId))) return { error: "Project not found." };
   const up = readUpload(formData.get("file"), UPLOAD_TYPES);
   if ("error" in up) return up;
+  const given = readNote(formData);
+  if ("error" in given) return given;
   const data = Buffer.from(await up.file.arrayBuffer());
   const hash = createHash("sha256").update(data).digest("hex");
 
@@ -89,9 +109,10 @@ export async function uploadSource(_prev: FormState, formData: FormData): Promis
 
   const fileUri = await saveFile(projectId, hash, up.file.name, data);
   const version = await nextVersion(projectId, { name: up.file.name });
+  const note = given.note ?? (version > 1 ? await previousNote(projectId, { name: up.file.name }) : undefined);
   const [source] = await db
     .insert(sources)
-    .values({ projectId, type: up.type, name: up.file.name, fileUri, contentHash: hash, version, createdBy: user.email })
+    .values({ projectId, type: up.type, name: up.file.name, fileUri, contentHash: hash, version, meta: note ? { note } : {}, createdBy: user.email })
     .returning();
   try {
     await queueIngest(projectId, source!.id, `Ingest ${up.file.name}`, user.email);
@@ -112,6 +133,8 @@ export async function addLoomSource(_prev: FormState, formData: FormData): Promi
   const id = loomVideoId(link);
   if (!id) return { error: "Paste a Loom share link, like https://www.loom.com/share/…" };
   const uri = `https://www.loom.com/share/${id}`;
+  const given = readNote(formData);
+  if ("error" in given) return given;
   const [same] = await db
     .select({ id: sources.id })
     .from(sources)
@@ -120,7 +143,7 @@ export async function addLoomSource(_prev: FormState, formData: FormData): Promi
   const version = await nextVersion(projectId, { uri });
   const [source] = await db
     .insert(sources)
-    .values({ projectId, type: "loom", name: `Loom video ${id.slice(0, 8)}`, uri, contentHash: createHash("sha256").update(`loom:${id}`).digest("hex"), version, createdBy: user.email })
+    .values({ projectId, type: "loom", name: `Loom video ${id.slice(0, 8)}`, uri, contentHash: createHash("sha256").update(`loom:${id}`).digest("hex"), version, meta: given.note ? { note: given.note } : {}, createdBy: user.email })
     .returning();
   try {
     await queueIngest(projectId, source!.id, "Ingest Loom video", user.email);
@@ -133,7 +156,7 @@ export async function addLoomSource(_prev: FormState, formData: FormData): Promi
 }
 
 /** Queue a Confluence job (add a page, or re-check the project's pages). If the queue is down, the run is marked failed. */
-async function queueConfluence(projectId: string, title: string, data: { link?: string; includeChildren?: boolean; sync?: boolean }, requestedBy: string) {
+async function queueConfluence(projectId: string, title: string, data: { link?: string; includeChildren?: boolean; sync?: boolean; note?: string }, requestedBy: string) {
   const [task] = await db.insert(tasks).values({ projectId, kind: "ingest", trigger: "manual", title, params: { ...data, confluence: true, requestedBy } }).returning();
   const [run] = await db.insert(runs).values({ taskId: task!.id }).returning();
   try {
@@ -155,6 +178,8 @@ export async function addConfluencePage(_prev: FormState, formData: FormData): P
   const ref = confluencePageRef(link);
   if (!ref) return { error: "Paste a Confluence page link, like https://yoursite.atlassian.net/wiki/spaces/DOCS/pages/123456/Page+title" };
   const includeChildren = formData.get("includeChildren") === "on";
+  const given = readNote(formData);
+  if ("error" in given) return given;
   if ("pageId" in ref) {
     const [same] = await db
       .select({ id: sources.id })
@@ -163,7 +188,7 @@ export async function addConfluencePage(_prev: FormState, formData: FormData): P
     if (same && !includeChildren) return { error: "This page is already a source. Use “Check Confluence for updates” to pick up edits." };
   }
   try {
-    await queueConfluence(projectId, includeChildren ? "Add Confluence page and child pages" : "Add Confluence page", { link, includeChildren }, user.email);
+    await queueConfluence(projectId, includeChildren ? "Add Confluence page and child pages" : "Add Confluence page", { link, includeChildren, ...given }, user.email);
   } catch (e) {
     revalidate(projectId);
     return { error: (e as Error).message };
@@ -182,6 +207,18 @@ export async function checkConfluence(formData: FormData) {
     // The failed run shows in Agent runs.
   }
   revalidate(projectId);
+}
+
+/** Save the project's standing instructions to the agent. They apply from the next read or plan. */
+export async function saveInstructions(_prev: FormState, formData: FormData): Promise<FormState> {
+  await requireUser();
+  const projectId = Uuid.parse(formData.get("projectId"));
+  if (!(await projectExists(projectId))) return { error: "Project not found." };
+  const text = String(formData.get("instructions") ?? "").trim();
+  if (text.length > AGENT_INSTRUCTIONS_MAX) return { error: `Keep the instructions under ${AGENT_INSTRUCTIONS_MAX} characters (they're ${text.length}).` };
+  await db.update(projects).set({ agentInstructions: text || null }).where(eq(projects.id, projectId));
+  revalidate(projectId);
+  return { ok: text ? "Saved. They apply the next time the agent reads a source or drafts the plan." : "Cleared. The agent works from the sources alone." };
 }
 
 const TRANSCRIPT_TYPES: Record<string, SourceType> = { vtt: "transcript", srt: "transcript", txt: "transcript" };

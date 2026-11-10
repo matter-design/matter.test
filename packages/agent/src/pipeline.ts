@@ -101,16 +101,23 @@ export function refChunks<T extends { id: string }>(chunks: T[]): { refs: ChunkR
 }
 
 export type StoredChunk = Chunk & { id: string };
-export type ProjectContext = { project: string; client: string; platform: string; siteUrl?: string | null };
+export type ProjectContext = {
+  project: string;
+  client: string;
+  platform: string;
+  siteUrl?: string | null;
+  /** The team's standing instructions to the agent for this project. */
+  instructions?: string | null;
+};
 
 /** Ask Claude for the requirements and client questions in one source. */
-export async function extractRequirements(model: StructuredModel, ctx: ProjectContext, source: { name: string; type: string }, chunks: StoredChunk[]) {
+export async function extractRequirements(model: StructuredModel, ctx: ProjectContext, source: { name: string; type: string; note?: string | null }, chunks: StoredChunk[]) {
   const { refs } = refChunks(chunks);
   const passages: Passage[] = chunks.map((c, i) => ({ ref: `c${i + 1}`, sourceName: source.name, sourceType: source.type, sectionPath: c.sectionPath, locator: c.locator, text: c.text }));
   const res = await model({
     schema: Extraction,
     system: EXTRACT_SYSTEM,
-    user: extractUser({ ...ctx, sourceName: source.name, sourceType: source.type, passages }),
+    user: extractUser({ ...ctx, sourceName: source.name, sourceType: source.type, sourceNote: source.note, passages }),
     effort: "high",
   });
   return { ...resolveExtraction(res.data, refs), usage: res.usage, model: res.model };
@@ -123,14 +130,21 @@ export type PlanInputChunk = StoredChunk & { sourceName: string; sourceType: str
  * Ask Claude for a plan, scenarios and test cases. The model sees every requirement and the passages they cite
  * (plus neighbouring passages for context, up to a budget), so its own citations can be checked.
  */
-export async function draftPlan(model: StructuredModel, ctx: ProjectContext, requirements: PlanInputRequirement[], chunks: PlanInputChunk[], openQuestions: string[] = []) {
+export async function draftPlan(
+  model: StructuredModel,
+  ctx: ProjectContext,
+  requirements: PlanInputRequirement[],
+  chunks: PlanInputChunk[],
+  openQuestions: string[] = [],
+  sourceNotes: { source: string; note: string }[] = [],
+) {
   const { refs, refOf } = refChunks(chunks);
   const passages: Passage[] = chunks.map((c) => ({ ref: refOf.get(c.id)!, sourceName: c.sourceName, sourceType: c.sourceType, sectionPath: c.sectionPath, locator: c.locator, text: c.text }));
   const reqs: PlanRequirement[] = requirements.map((r) => ({ ...r, passageRefs: r.sourceChunkIds.map((id) => refOf.get(id)).filter((x): x is string => !!x) }));
   const res = await model({
     schema: PlanDraft,
     system: PLAN_SYSTEM,
-    user: planUser({ ...ctx, requirements: reqs, passages, openQuestions }),
+    user: planUser({ ...ctx, requirements: reqs, passages, openQuestions, sourceNotes }),
     effort: "high",
   });
   return { ...resolvePlan(res.data, new Set(requirements.map((r) => r.key)), refs), usage: res.usage, model: res.model };

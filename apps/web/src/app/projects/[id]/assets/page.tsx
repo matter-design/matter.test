@@ -6,7 +6,7 @@ import { agentRuns, currentPlan, liveRequirements, passages, projectQuestions, p
 import { latestSiteCheck, projectWithClient } from "@/lib/queries";
 import { KIND_LABEL, REVIEW_LABEL, SOURCE_STATUS_LABEL, SOURCE_TYPE_LABEL, clock, duration, plural, timeAgo, usd } from "@/lib/format";
 import { checkConfluence, regeneratePlan, retrySource, updateQuestion } from "./actions";
-import { AddSource, AttachTranscript, AutoRefresh } from "./SourceForms";
+import { AddSource, AgentInstructions, AttachTranscript, AutoRefresh } from "./SourceForms";
 
 export const dynamic = "force-dynamic";
 
@@ -110,6 +110,10 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
 
       <div className="assets-layout">
         <aside className="assets-side">
+          <section className="panel" aria-label="Instructions for the agent">
+            <AgentInstructions projectId={id} value={project.agentInstructions ?? ""} hasPlan={!!tree} />
+          </section>
+
           <section className="panel" aria-labelledby="sources-h">
             <h2 id="sources-h" style={{ fontSize: 15 }}>Sources</h2>
             {!srcs.length && <p className="muted small" style={{ margin: 0 }}>Nothing yet. Add the client&apos;s brief, requirements document, a Confluence page or a Loom walkthrough.</p>}
@@ -122,12 +126,21 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
                 <span className="small muted">{sourceDetail(s)}</span>
                 {s.type === "loom" && s.uri && <a className="small" href={s.uri} target="_blank" rel="noreferrer">Open in Loom</a>}
                 {s.type === "confluence" && s.uri && <a className="small" href={s.meta.confluence?.webUrl ?? s.uri} target="_blank" rel="noreferrer">Open in Confluence</a>}
+                {s.meta.note && <span className="small source-note">Note for the agent: {s.meta.note}</span>}
                 {s.error && <span className="small" style={{ color: s.status === "failed" ? "var(--crit)" : "var(--high)" }}>{s.error}</span>}
                 {s.status === "needs-transcript" && <AttachTranscript sourceId={s.id} />}
                 {s.status === "failed" && (
                   <form action={retrySource}>
                     <input type="hidden" name="sourceId" value={s.id} />
                     <button type="submit" className="btn btn-outline btn-sm">Try again</button>
+                  </form>
+                )}
+                {s.status === "ready" && (s.fileUri || s.uri) && (
+                  <form action={retrySource}>
+                    <input type="hidden" name="sourceId" value={s.id} />
+                    <button type="submit" className="link-btn small" disabled={busy} title="Read this source again with the current instructions. Its requirements and questions are replaced, so earlier approvals on them are lost.">
+                      Read again
+                    </button>
                   </form>
                 )}
               </div>

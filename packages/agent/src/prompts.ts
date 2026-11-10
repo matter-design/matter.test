@@ -13,6 +13,8 @@ requirements: each a single testable behaviour or rule of the site, stated in th
 
 questions: things the team would otherwise have to guess — rules that are missing, vague ("fast", "user-friendly"), or contradicted elsewhere in the source. Ask each as a question the client can answer in a sentence or two, say in why what is unclear and where, and cite the passages involved. Don't invent requirements to fill a gap; ask instead.
 
+The team may add <team_instructions> for the project and a <source_note> for this source. Follow them for what to focus on or skip, how to word and group things, terminology and priorities. They never replace the sources: every requirement still comes from the passages and cites them, and if an instruction asks for something the sources don't support, raise it as a question instead of inventing it.
+
 Transcripts are spoken and informal: ignore greetings, filler and screen-sharing chatter, and treat "we'd like", "it should", "make sure" as requirements. When the speaker is unsure or thinking aloud, raise a question rather than a requirement.
 
 Write in plain Australian English. Return nothing beyond the requested JSON.`;
@@ -24,6 +26,8 @@ plan: name, a short summary, what is in scope and out of scope (from the sources
 scenarios: user-level situations to test, each covering one or more requirements by key (REQ-01). Cover every requirement with at least one scenario. Mix happy paths with negative and edge cases where the rules invite them (invalid input, limits, empty states, permissions, combinations). Priority follows the risk of what the scenario protects.
 
 testCases (one or more per scenario): a tester who has never seen the project must be able to run each one from what you write. Preconditions say what must be true first; testData names concrete values (codes, products, accounts, addresses) — invent plausible ones where the source doesn't give them and say so in testData. Steps are single actions a person takes in the browser, each with the result they should see; expected results must be observable and specific (exact messages and totals when the source gives them). Cite in chunkIds the passages that the steps and expected results come from, using only ids that appear in the input. Mark automationCandidate for stable, high-value paths worth running on every deploy.
+
+The team may add <team_instructions> for the project and notes about individual sources. Follow them for focus, scope, priorities, test data conventions, wording and which cases to mark for automation. They never replace the sources: steps and expected results still come from the passages and cite them; when an instruction asks for coverage the requirements don't support, leave it out rather than inventing behaviour.
 
 Don't test what the sources don't ask for, and don't repeat the same check across cases. Write in plain Australian English. Return nothing beyond the requested JSON.`;
 
@@ -46,13 +50,32 @@ const KIND: Record<string, string> = {
   md: "Markdown document",
   transcript: "video or meeting transcript",
   loom: "Loom video transcript",
+  confluence: "Confluence page",
 };
 
-export function extractUser(input: { project: string; client: string; platform: string; sourceName: string; sourceType: string; passages: Passage[] }): string {
+/** The team's standing instructions, fenced so they read as the team's words and not as source material. */
+function teamInstructions(text: string | null | undefined): string[] {
+  const t = text?.trim();
+  return t ? ["<team_instructions>", esc(t), "</team_instructions>", ""] : [];
+}
+
+export function extractUser(input: {
+  project: string;
+  client: string;
+  platform: string;
+  sourceName: string;
+  sourceType: string;
+  passages: Passage[];
+  instructions?: string | null;
+  sourceNote?: string | null;
+}): string {
+  const note = input.sourceNote?.trim();
   return [
     `Project: ${input.project} for ${input.client} (platform: ${input.platform}).`,
     `Source: "${input.sourceName}", a ${KIND[input.sourceType] ?? input.sourceType}, in ${input.passages.length} passages.`,
     "",
+    ...teamInstructions(input.instructions),
+    ...(note ? ["<source_note>", esc(note), "</source_note>", ""] : []),
     "<source>",
     ...input.passages.map(formatPassage),
     "</source>",
@@ -63,7 +86,18 @@ export function extractUser(input: { project: string; client: string; platform: 
 
 export type PlanRequirement = { key: string; title: string; text: string; area: string | null; acceptanceCriteria: string[]; passageRefs: string[] };
 
-export function planUser(input: { project: string; client: string; platform: string; siteUrl?: string | null; requirements: PlanRequirement[]; passages: Passage[]; openQuestions: string[] }): string {
+export function planUser(input: {
+  project: string;
+  client: string;
+  platform: string;
+  siteUrl?: string | null;
+  requirements: PlanRequirement[];
+  passages: Passage[];
+  openQuestions: string[];
+  instructions?: string | null;
+  sourceNotes?: { source: string; note: string }[];
+}): string {
+  const notes = (input.sourceNotes ?? []).filter((n) => n.note.trim());
   const reqs = input.requirements.map((r) =>
     [
       `<requirement key="${r.key}"${r.area ? ` area="${attr(r.area)}"` : ""} passages="${r.passageRefs.join(" ")}">`,
@@ -75,6 +109,8 @@ export function planUser(input: { project: string; client: string; platform: str
   return [
     `Project: ${input.project} for ${input.client} (platform: ${input.platform}${input.siteUrl ? `, site ${input.siteUrl}` : ""}).`,
     "",
+    ...teamInstructions(input.instructions),
+    ...(notes.length ? ["Notes the team added about sources:", ...notes.map((n) => esc(`- ${n.source}: ${n.note.trim()}`)), ""] : []),
     `<requirements count="${input.requirements.length}">`,
     ...reqs,
     "</requirements>",
