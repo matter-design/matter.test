@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { asc, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { PlanJob } from "@mattertest/core";
+import { confluencePageUrl, type PlanJob } from "@mattertest/core";
 import { clientQuestions, clients, createDb, projects, requirements, runs, scenarios, sourceChunks, sources, tasks, testCases, testPlans, type Db } from "@mattertest/db";
-import { Extraction, PlanDraft, type Embedder, type StructuredModel } from "@mattertest/agent";
-import { runIngest, runPlan, type AgentDeps } from "../src/agent";
+import { Extraction, NOT_SET_UP, PlanDraft, type ConfluenceConfig, type Embedder, type StructuredModel } from "@mattertest/agent";
+import { runConfluence, runIngest, runPlan, type AgentDeps } from "../src/agent";
 
 const hasDb = !!process.env.DATABASE_URL;
 const db = hasDb ? createDb() : (undefined as never);
@@ -188,5 +188,107 @@ describe.skipIf(!hasDb)("agent jobs", () => {
     expect(src).toMatchObject({ status: "failed", error: "Claude declined to process this source." });
     const [run] = await db.select().from(runs).where(eq(runs.id, job.runId));
     expect(run).toMatchObject({ status: "failed", inputTokens: 100, costUsd: "0.0004" });
+  });
+
+  describe("Confluence", () => {
+    const ORIGIN = "https://northwind.atlassian.net";
+    const conf: ConfluenceConfig = { origin: ORIGIN, email: "qa@matterdesign.com.au", token: "t" };
+    const pages: Record<string, { title: string; version: number; html: string }> = {
+      "100": { title: "Checkout v2", version: 3, html: "<h2>Promo codes</h2><p>If a code has expired, show This code expired on {date} under the field.</p><h2>Speed</h2><p>It should load fast on mobile.</p>" },
+      "101": { title: "Shipping rules", version: 1, html: "<h2>Standard</h2><p>Standard shipping is free on orders over $99 (AUD).</p>" },
+      "102": { title: "Old notes", version: 1, html: "<p>Nothing to test here.</p>" },
+    };
+    const children: Record<string, { id: string; type: string; title: string; status: string }[]> = {
+      "100": [{ id: "101", type: "page", title: "Shipping rules", status: "current" }, { id: "900", type: "folder", title: "Archive", status: "current" }],
+      "900": [{ id: "102", type: "page", title: "Old notes", status: "current" }],
+    };
+    const confluenceFetch = (async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const page = url.pathname.match(/^\/wiki\/api\/v2\/pages\/(\d+)$/);
+      const json = (j: unknown, status = 200) => new Response(JSON.stringify(j), { status });
+      if (page) {
+        const p = pages[page[1]!];
+        return p ? json({ id: page[1], title: p.title, version: { number: p.version }, body: { export_view: { value: p.html } }, _links: { webui: `/spaces/SHOP/pages/${page[1]}`, base: `${ORIGIN}/wiki` } }) : json({}, 404);
+      }
+      const kids = url.pathname.match(/^\/wiki\/api\/v2\/(?:pages|folders)\/(\d+)\/direct-children$/);
+      if (kids) return json({ results: children[kids[1]!] ?? [], _links: {} });
+      return json({}, 404);
+    }) as typeof fetch;
+
+    async function confluenceJob(projectId: string, data: { link?: string; includeChildren?: boolean; sync?: boolean }) {
+      const [t] = await db.insert(tasks).values({ projectId, kind: "ingest", title: "Confluence", params: { confluence: true } }).returning();
+      const [r] = await db.insert(runs).values({ taskId: t!.id }).returning();
+      return { taskId: t!.id, runId: r!.id, projectId, includeChildren: false, sync: false, ...data };
+    }
+    const confDeps = (planned: PlanJob[], c: ConfluenceConfig | null = conf): AgentDeps => ({ ...deps(planned, confluenceFetch), confluence: c });
+    const runOf = async (id: string) => (await db.select().from(runs).where(eq(runs.id, id)))[0]!;
+    const live = async (projectId: string) =>
+      (await db.select().from(sources).where(eq(sources.projectId, projectId)).orderBy(asc(sources.name), asc(sources.version))).map((s) => [s.name, s.version, s.status]);
+
+    it("adds a page with its child pages as separate sources, then drafts one plan", async () => {
+      const projectId = await setup();
+      const planned: PlanJob[] = [];
+      const job = await confluenceJob(projectId, { link: `${ORIGIN}/wiki/spaces/SHOP/pages/100/Checkout+v2`, includeChildren: true });
+      await runConfluence(db, job, confDeps(planned));
+
+      expect(await live(projectId)).toEqual([["Checkout v2", 1, "ready"], ["Old notes", 1, "ready"], ["Shipping rules", 1, "ready"]]);
+      const [root] = await db.select().from(sources).where(eq(sources.uri, confluencePageUrl(ORIGIN, "100")));
+      expect(root!.meta.confluence).toEqual({ pageId: "100", version: 3, webUrl: `${ORIGIN}/wiki/spaces/SHOP/pages/100`, rootPageId: "100", includeChildren: true });
+      const [child] = await db.select().from(sources).where(eq(sources.uri, confluencePageUrl(ORIGIN, "102")));
+      expect(child!.meta.confluence).toMatchObject({ pageId: "102", rootPageId: "100" });
+      expect(child!.meta.confluence?.includeChildren).toBeUndefined();
+
+      const reqs = await db.select().from(requirements).where(eq(requirements.projectId, projectId)).orderBy(asc(requirements.key));
+      expect(reqs.map((r) => r.title).sort()).toEqual(["Expired code error", "Free shipping over $99"]);
+      const run = await runOf(job.runId);
+      expect(run.status).toBe("done");
+      expect(run.summary).toMatchObject({ pages: 3, added: 3, changed: 0, unchanged: 0, failed: 0, requirements: 2 });
+      expect(Number(run.costUsd)).toBeCloseTo(0.036 * 3, 4); // one extraction per page
+      expect(planned).toHaveLength(1);
+    });
+
+    it("checks for updates: unchanged pages are skipped, a changed page gets a new version, new child pages are added", async () => {
+      const projectId = await setup();
+      await runConfluence(db, await confluenceJob(projectId, { link: `${ORIGIN}/wiki/pages/viewpage.action?pageId=100`, includeChildren: true }), confDeps([]));
+
+      const quiet: PlanJob[] = [];
+      const noChange = await confluenceJob(projectId, { sync: true });
+      await runConfluence(db, noChange, confDeps(quiet));
+      expect((await runOf(noChange.runId)).summary).toMatchObject({ pages: 3, added: 0, changed: 0, unchanged: 3 });
+      expect(quiet).toHaveLength(0);
+
+      const saved = { ...pages["101"]! };
+      pages["101"] = { ...saved, version: 2, html: saved.html + "<p>Express shipping costs $14.95.</p>" };
+      children["900"]!.push({ id: "103", type: "page", title: "New page", status: "current" });
+      pages["103"] = { title: "New page", version: 1, html: "<p>Standard shipping is free on orders over $99 for members too.</p>" };
+      try {
+        const planned: PlanJob[] = [];
+        const sync = await confluenceJob(projectId, { sync: true });
+        await runConfluence(db, sync, confDeps(planned));
+        expect((await runOf(sync.runId)).summary).toMatchObject({ pages: 4, added: 1, changed: 1, unchanged: 2 });
+        expect(await live(projectId)).toEqual([["Checkout v2", 1, "ready"], ["New page", 1, "ready"], ["Old notes", 1, "ready"], ["Shipping rules", 1, "superseded"], ["Shipping rules", 2, "ready"]]);
+        const states = await db.select({ key: requirements.key, state: requirements.reviewState, sourceId: requirements.sourceId }).from(requirements).where(eq(requirements.projectId, projectId));
+        expect(states.filter((r) => r.state === "superseded")).toHaveLength(1);
+        expect(planned).toHaveLength(1);
+      } finally {
+        pages["101"] = saved;
+        children["900"]!.pop();
+        delete pages["103"];
+      }
+    });
+
+    it("fails the run with a plain message when Confluence isn't set up or can't open the page", async () => {
+      const projectId = await setup();
+      const noCfg = await confluenceJob(projectId, { link: `${ORIGIN}/wiki/spaces/SHOP/pages/100` });
+      await runConfluence(db, noCfg, confDeps([], null));
+      expect(await runOf(noCfg.runId)).toMatchObject({ status: "failed", summary: { error: NOT_SET_UP } });
+
+      const missing = await confluenceJob(projectId, { link: `${ORIGIN}/wiki/spaces/SHOP/pages/404` });
+      await runConfluence(db, missing, confDeps([]));
+      const run = await runOf(missing.runId);
+      expect(run.status).toBe("failed");
+      expect((run.summary as { error: string }).error).toMatch(/Couldn't open page 404/);
+      expect(await live(projectId)).toEqual([]);
+    });
   });
 });

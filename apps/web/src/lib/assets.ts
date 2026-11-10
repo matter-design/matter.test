@@ -61,6 +61,8 @@ export type AgentRun = {
   inputTokens: number;
   outputTokens: number;
   sourceId: string | null;
+  /** Added a Confluence page or checked Confluence for updates. */
+  confluence: boolean;
 };
 
 /** Recent ingest and plan runs for a project, newest first. */
@@ -79,6 +81,7 @@ export async function agentRuns(projectId: string, limit = 10): Promise<AgentRun
       inputTokens: runs.inputTokens,
       outputTokens: runs.outputTokens,
       sourceId: sql<string | null>`${tasks.params}->>'sourceId'`,
+      confluence: sql<boolean>`coalesce((${tasks.params}->>'confluence')::boolean, false)`,
     })
     .from(runs)
     .innerJoin(tasks, eq(tasks.id, runs.taskId))
@@ -123,6 +126,8 @@ export type Passage = {
   /** Where "open source" goes: the source view, or the Loom video at that moment. */
   href: string;
   videoHref: string | null;
+  /** The Confluence page the passage came from. */
+  pageHref: string | null;
 };
 
 /** Source passages by chunk id, in the order given. */
@@ -149,6 +154,7 @@ export async function passages(ids: string[]): Promise<Passage[]> {
       text: r.c.text,
       href: `/sources/${r.s.id}?hl=${id}#chunk-${id}`,
       videoHref,
+      pageHref: r.s.type === "confluence" ? (r.s.meta.confluence?.webUrl ?? r.s.uri) : null,
     }];
   });
 }

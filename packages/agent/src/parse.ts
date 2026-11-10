@@ -67,23 +67,40 @@ function decode(s: string) {
     .replace(/&([a-z]+);/gi, (m, n) => ENTITIES[n.toLowerCase()] ?? m);
 }
 
-/** DOCX via mammoth's HTML: h1–h6 set the section; p, li and table cells become blocks. */
+/** DOCX via mammoth's HTML. */
 export async function parseDocx(buf: Buffer): Promise<Block[]> {
   const { value: html } = await mammoth.convertToHtml({ buffer: buf });
+  return parseHtml(html);
+}
+
+/**
+ * HTML (mammoth's DOCX output, Confluence's rendered pages): h1–h6 set the section; p, li, pre, blockquote and
+ * table cells become blocks. Scripts, styles and comments are dropped.
+ */
+export function parseHtml(html: string): Block[] {
+  const clean = html.replace(/<!--[\s\S]*?-->/g, "").replace(/<(script|style|noscript)\b[\s\S]*?<\/\1>/gi, "");
   const blocks: Block[] = [];
-  const stack: string[] = [];
-  const re = /<(h[1-6]|p|li|td|th)\b[^>]*>([\s\S]*?)<\/\1>/gi;
-  for (const m of html.matchAll(re)) {
+  // Open headings by level, so an h2 after an h2 replaces it even when the page has no h1.
+  const stack: { level: number; text: string }[] = [];
+  const re = /<(h[1-6]|p|li|td|th|pre|blockquote)\b[^>]*>([\s\S]*?)<\/\1>/gi;
+  for (const m of clean.matchAll(re)) {
     const tag = m[1]!.toLowerCase();
-    const text = decode(m[2]!.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "")).replace(/[ \t]+/g, " ").trim();
+    const inner = m[2]!.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li)>/gi, "\n").replace(/<[^>]+>/g, "");
+    const text =
+      tag === "pre"
+        ? decode(inner).trim()
+        : decode(inner)
+            .replace(/[ \t\u00a0]+/g, " ")
+            .replace(/ *\n+ */g, "\n")
+            .trim();
     if (!text) continue;
     if (tag[0] === "h" && tag !== "th") {
       const level = Number(tag[1]);
-      stack.length = Math.min(stack.length, level - 1);
-      stack.push(text);
+      while (stack.length && stack[stack.length - 1]!.level >= level) stack.pop();
+      stack.push({ level, text: text.replace(/\n/g, " ") });
       continue;
     }
-    blocks.push({ headings: [...stack], text: tag === "li" ? `- ${text}` : text });
+    blocks.push({ headings: stack.map((h) => h.text), text: tag === "li" ? `- ${text}` : text });
   }
   return blocks;
 }

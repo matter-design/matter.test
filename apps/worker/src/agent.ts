@@ -1,6 +1,8 @@
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
-import { artefactPath, type IngestJob, type PlanJob, type SourceType } from "@mattertest/core";
+import { CONFLUENCE_MAX_PAGES, artefactPath, confluencePageUrl, type ConfluenceJob, type IngestJob, type PlanJob, type SourceType } from "@mattertest/core";
 import {
   type Db,
   clientQuestions,
@@ -18,12 +20,17 @@ import {
 } from "@mattertest/db";
 import {
   AgentError,
+  ConfluenceError,
+  NOT_SET_UP,
   NO_USAGE,
   NeedsTranscript,
   addUsage,
   draftPlan,
   extractRequirements,
+  readPageTree,
   readSource,
+  resolvePageId,
+  type ConfluenceConfig,
   type Embedder,
   type PlanInputChunk,
   type ProjectContext,
@@ -35,6 +42,8 @@ export type AgentDeps = {
   model: StructuredModel;
   embedder: Embedder | null;
   fetch?: typeof fetch;
+  /** Confluence connection, or null when it isn't set up. */
+  confluence?: ConfluenceConfig | null;
   /** Put a plan job on the queue (the worker passes the BullMQ queue; tests run it inline). */
   queuePlan: (job: PlanJob) => Promise<void>;
   log?: (msg: string) => void;
@@ -81,15 +90,18 @@ function nextNumber(keys: string[], prefix: string): number {
 }
 const keyOf = (prefix: string, n: number, width: number) => `${prefix}-${String(n).padStart(width, "0")}`;
 
-/** Read, chunk, embed and extract one source; then queue a plan run. */
-export async function runIngest(db: Db, job: IngestJob, deps: AgentDeps) {
+type Source = typeof sources.$inferSelect;
+
+type IngestOutcome =
+  | { ok: true; usage: Usage; requirements: number; questions: number; summary: Record<string, unknown> }
+  | { ok: false; usage: Usage; error: string; needsTranscript: boolean; cause: unknown };
+
+/**
+ * Read, chunk, embed and extract one source, keeping its status up to date. Never throws: failures are
+ * recorded on the source and returned, with whatever the model calls cost.
+ */
+async function ingestSource(db: Db, source: Source, deps: AgentDeps): Promise<IngestOutcome> {
   const log = deps.log ?? (() => {});
-  await start(db, job.taskId, job.runId);
-  const [source] = await db.select().from(sources).where(eq(sources.id, job.sourceId));
-  if (!source) {
-    await finish(db, job.taskId, job.runId, "failed", NO_USAGE, { error: "Source not found" });
-    return;
-  }
   await db.update(sources).set({ status: "ingesting", error: null }).where(eq(sources.id, source.id));
   let usage = NO_USAGE;
   try {
@@ -122,7 +134,7 @@ export async function runIngest(db: Db, job: IngestJob, deps: AgentDeps) {
 
     const ctx = await projectContext(db, source.projectId);
     log("extracting requirements");
-    const extracted = await extractRequirements(deps.model, ctx, { name: meta.title ?? source.name, type: source.type }, storedChunks);
+    const extracted = await extractRequirements(deps.model, ctx, { name: meta.title ?? source.meta.title ?? source.name, type: source.type }, storedChunks);
     usage = extracted.usage;
 
     const existing = await db.select({ key: requirements.key }).from(requirements).where(eq(requirements.projectId, source.projectId));
@@ -136,11 +148,13 @@ export async function runIngest(db: Db, job: IngestJob, deps: AgentDeps) {
       await db.insert(clientQuestions).values(extracted.questions.map((q) => ({ projectId: source.projectId, sourceId: source.id, question: q.question, why: q.why, sourceChunkIds: q.sourceChunkIds })));
     }
 
-    // An older version of the same document (same name, or same Loom link) no longer feeds the plan.
+    // An older version of the same document no longer feeds the plan: same link, or for uploads the same name.
+    // Confluence pages match by link only, since two pages in a space can share a title.
+    const sameDoc = source.uri ? (source.type === "confluence" ? eq(sources.uri, source.uri) : or(eq(sources.uri, source.uri), eq(sources.name, source.name))) : eq(sources.name, source.name);
     const older = await db
       .select({ id: sources.id })
       .from(sources)
-      .where(and(eq(sources.projectId, source.projectId), ne(sources.id, source.id), sql`${sources.version} < ${source.version}`, source.uri ? or(eq(sources.uri, source.uri), eq(sources.name, source.name)) : eq(sources.name, source.name)));
+      .where(and(eq(sources.projectId, source.projectId), ne(sources.id, source.id), sql`${sources.version} < ${source.version}`, sameDoc));
     if (older.length) {
       const ids = older.map((o) => o.id);
       await db.update(sources).set({ status: "superseded" }).where(inArray(sources.id, ids));
@@ -151,35 +165,187 @@ export async function runIngest(db: Db, job: IngestJob, deps: AgentDeps) {
       .update(sources)
       .set({ status: "ready", error: null, meta: { ...source.meta, ...meta, chunks: chunks.length } })
       .where(eq(sources.id, source.id));
-    await finish(db, job.taskId, job.runId, "done", usage, {
-      chunks: chunks.length,
-      embedded: !!vectors,
-      ...(embedError ? { embedError } : {}),
+    return {
+      ok: true,
+      usage,
       requirements: extracted.requirements.length,
       questions: extracted.questions.length,
-      dropped: extracted.report,
-      model: extracted.model,
-    });
-
-    if (job.thenPlan && extracted.requirements.length) {
-      const [task] = await db
-        .insert(tasks)
-        .values({ projectId: source.projectId, kind: "plan", trigger: "manual", title: "Draft test plan", params: { sourceId: source.id }, parentTaskId: job.taskId })
-        .returning();
-      const [run] = await db.insert(runs).values({ taskId: task!.id }).returning();
-      await deps.queuePlan({ taskId: task!.id, runId: run!.id, projectId: source.projectId });
-    }
+      summary: {
+        chunks: chunks.length,
+        embedded: !!vectors,
+        ...(embedError ? { embedError } : {}),
+        requirements: extracted.requirements.length,
+        questions: extracted.questions.length,
+        dropped: extracted.report,
+        model: extracted.model,
+      },
+    };
   } catch (e) {
     if (e instanceof NeedsTranscript) {
       await db.update(sources).set({ status: "needs-transcript", error: e.message }).where(eq(sources.id, source.id));
-      await finish(db, job.taskId, job.runId, "needs-review", usage, { needsTranscript: true, error: e.message });
-      return;
+      return { ok: false, usage, error: e.message, needsTranscript: true, cause: e };
     }
     if (e instanceof AgentError) usage = addUsage(usage, e.usage);
     const message = (e as Error).message;
     await db.update(sources).set({ status: "failed", error: message }).where(eq(sources.id, source.id));
-    await finish(db, job.taskId, job.runId, "failed", usage, { error: message });
-    throw e;
+    return { ok: false, usage, error: message, needsTranscript: false, cause: e };
+  }
+}
+
+/** Queue a plan run after ingest, as a child of the ingest task. */
+async function queuePlanAfter(db: Db, deps: AgentDeps, projectId: string, parentTaskId: string, params: Record<string, unknown>) {
+  const [task] = await db.insert(tasks).values({ projectId, kind: "plan", trigger: "manual", title: "Draft test plan", params, parentTaskId }).returning();
+  const [run] = await db.insert(runs).values({ taskId: task!.id }).returning();
+  await deps.queuePlan({ taskId: task!.id, runId: run!.id, projectId });
+}
+
+/** Read, chunk, embed and extract one source; then queue a plan run. */
+export async function runIngest(db: Db, job: IngestJob, deps: AgentDeps) {
+  await start(db, job.taskId, job.runId);
+  const [source] = await db.select().from(sources).where(eq(sources.id, job.sourceId));
+  if (!source) {
+    await finish(db, job.taskId, job.runId, "failed", NO_USAGE, { error: "Source not found" });
+    return;
+  }
+  const out = await ingestSource(db, source, deps);
+  if (!out.ok) {
+    if (out.needsTranscript) {
+      await finish(db, job.taskId, job.runId, "needs-review", out.usage, { needsTranscript: true, error: out.error });
+      return;
+    }
+    await finish(db, job.taskId, job.runId, "failed", out.usage, { error: out.error });
+    throw out.cause;
+  }
+  await finish(db, job.taskId, job.runId, "done", out.usage, out.summary);
+  if (job.thenPlan && out.requirements) await queuePlanAfter(db, deps, source.projectId, job.taskId, { sourceId: source.id });
+}
+
+/**
+ * Add a Confluence page (and its child pages), or with `sync` re-check every Confluence page in the project.
+ * Each page is its own source. Pages whose Confluence version hasn't changed are skipped; new and changed pages
+ * are saved as HTML, ingested here one after another, and one plan run follows.
+ */
+export async function runConfluence(db: Db, job: ConfluenceJob, deps: AgentDeps) {
+  const log = deps.log ?? (() => {});
+  await start(db, job.taskId, job.runId);
+  let usage = NO_USAGE;
+  const counts = { pages: 0, added: 0, changed: 0, unchanged: 0, failed: 0, requirements: 0, questions: 0 };
+  const problems: string[] = [];
+  try {
+    const cfg = deps.confluence;
+    if (!cfg) throw new ConfluenceError(NOT_SET_UP);
+    const f = deps.fetch ?? fetch;
+
+    let roots: { pageId: string; includeChildren: boolean; title?: string }[];
+    if (job.sync) {
+      const live = await db
+        .select()
+        .from(sources)
+        .where(and(eq(sources.projectId, job.projectId), eq(sources.type, "confluence"), ne(sources.status, "superseded")));
+      const byRoot = new Map<string, { pageId: string; includeChildren: boolean; title?: string }>();
+      for (const s of live) {
+        const c = s.meta.confluence;
+        if (!c) continue;
+        const root = byRoot.get(c.rootPageId) ?? { pageId: c.rootPageId, includeChildren: false };
+        if (c.pageId === c.rootPageId) Object.assign(root, { includeChildren: !!c.includeChildren, title: s.name });
+        byRoot.set(c.rootPageId, root);
+      }
+      roots = [...byRoot.values()];
+      if (!roots.length) throw new ConfluenceError("There are no Confluence pages in this project yet.");
+    } else {
+      if (!job.link) throw new ConfluenceError("No Confluence link was given.");
+      roots = [{ pageId: await resolvePageId(cfg, job.link, f), includeChildren: job.includeChildren }];
+    }
+
+    const seen = new Set<string>();
+    const toIngest: Source[] = [];
+    for (const root of roots) {
+      let tree: Awaited<ReturnType<typeof readPageTree>>;
+      try {
+        log(`reading Confluence page ${root.pageId}${root.includeChildren ? " and its child pages" : ""}`);
+        tree = await readPageTree(cfg, root.pageId, { includeChildren: root.includeChildren }, f);
+      } catch (e) {
+        if (!job.sync || !(e instanceof ConfluenceError)) throw e;
+        problems.push(`${root.title ?? `Page ${root.pageId}`}: ${e.message}`);
+        continue;
+      }
+      if (tree.truncated) problems.push(`Only the first ${CONFLUENCE_MAX_PAGES} pages under "${tree.pages[0]!.title}" were read.`);
+      for (const page of tree.pages) {
+        if (seen.has(page.id)) continue;
+        seen.add(page.id);
+        const uri = confluencePageUrl(cfg.origin, page.id);
+        const [latest] = await db
+          .select()
+          .from(sources)
+          .where(and(eq(sources.projectId, job.projectId), eq(sources.uri, uri)))
+          .orderBy(desc(sources.version))
+          .limit(1);
+        const isRoot = page.id === root.pageId;
+        if (latest && latest.meta.confluence?.version === page.version) {
+          if (latest.status === "failed") {
+            toIngest.push(latest); // same content, failed last time: try it again
+            counts.changed++;
+          } else {
+            counts.unchanged++;
+          }
+          continue;
+        }
+        if (!page.html.trim()) {
+          problems.push(`${page.title}: the page is empty.`);
+          continue;
+        }
+        const data = Buffer.from(page.html, "utf8");
+        const hash = createHash("sha256").update(data).digest("hex");
+        const fileUri = `sources/${job.projectId}/${hash.slice(0, 16)}-confluence-${page.id}.html`;
+        await mkdir(dirname(artefactPath(fileUri)), { recursive: true });
+        await writeFile(artefactPath(fileUri), data);
+        const [source] = await db
+          .insert(sources)
+          .values({
+            projectId: job.projectId,
+            type: "confluence",
+            name: page.title,
+            uri,
+            fileUri,
+            contentHash: hash,
+            version: (latest?.version ?? 0) + 1,
+            meta: {
+              title: page.title,
+              confluence: { pageId: page.id, version: page.version, webUrl: page.webUrl, rootPageId: root.pageId, ...(isRoot ? { includeChildren: root.includeChildren } : {}) },
+            },
+            createdBy: job.requestedBy ?? null,
+          })
+          .returning();
+        if (latest) counts.changed++;
+        else counts.added++;
+        toIngest.push(source!);
+      }
+    }
+    counts.pages = seen.size;
+
+    for (const source of toIngest) {
+      const out = await ingestSource(db, source, deps);
+      usage = addUsage(usage, out.usage);
+      if (out.ok) {
+        counts.requirements += out.requirements;
+        counts.questions += out.questions;
+      } else {
+        counts.failed++;
+        problems.push(`${source.name}: ${out.error}`);
+      }
+    }
+
+    const allFailed = toIngest.length > 0 && counts.failed === toIngest.length;
+    await finish(db, job.taskId, job.runId, allFailed ? "failed" : "done", usage, {
+      ...counts,
+      ...(problems.length ? { problems } : {}),
+      ...(allFailed ? { error: problems[0] } : {}),
+    });
+    if (counts.requirements) await queuePlanAfter(db, deps, job.projectId, job.taskId, { confluence: true });
+  } catch (e) {
+    if (e instanceof AgentError) usage = addUsage(usage, e.usage);
+    await finish(db, job.taskId, job.runId, "failed", usage, { ...counts, error: (e as Error).message, ...(problems.length ? { problems } : {}) });
+    if (!(e instanceof ConfluenceError)) throw e;
   }
 }
 

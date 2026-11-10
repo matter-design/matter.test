@@ -6,7 +6,7 @@ import { dirname } from "node:path";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { MAX_UPLOAD_BYTES, UPLOAD_TYPES, artefactPath, loomVideoId, type SourceType } from "@mattertest/core";
+import { MAX_UPLOAD_BYTES, UPLOAD_TYPES, artefactPath, confluencePageRef, confluencePageUrl, loomVideoId, type SourceType } from "@mattertest/core";
 import { clientQuestions, projects, requirements, runs, scenarios, sources, tasks, testCases, testPlans } from "@mattertest/db";
 import { requireUser } from "@/lib/auth";
 import { agentQueue, db } from "@/lib/server";
@@ -130,6 +130,58 @@ export async function addLoomSource(_prev: FormState, formData: FormData): Promi
   }
   revalidate(projectId);
   return { ok: "Added the Loom video. Reading its transcript now." };
+}
+
+/** Queue a Confluence job (add a page, or re-check the project's pages). If the queue is down, the run is marked failed. */
+async function queueConfluence(projectId: string, title: string, data: { link?: string; includeChildren?: boolean; sync?: boolean }, requestedBy: string) {
+  const [task] = await db.insert(tasks).values({ projectId, kind: "ingest", trigger: "manual", title, params: { ...data, confluence: true, requestedBy } }).returning();
+  const [run] = await db.insert(runs).values({ taskId: task!.id }).returning();
+  try {
+    await agentQueue().add("confluence", { taskId: task!.id, runId: run!.id, projectId, requestedBy, ...data });
+  } catch {
+    const error = "Could not reach the job queue (is Redis running?)";
+    await db.update(runs).set({ status: "failed", finishedAt: new Date(), summary: { error } }).where(eq(runs.id, run!.id));
+    await db.update(tasks).set({ status: "failed" }).where(eq(tasks.id, task!.id));
+    throw new Error(error);
+  }
+}
+
+/** Add a Confluence page, optionally with its child pages. The worker reads them with the team's Confluence account. */
+export async function addConfluencePage(_prev: FormState, formData: FormData): Promise<FormState> {
+  const user = await requireUser();
+  const projectId = Uuid.parse(formData.get("projectId"));
+  if (!(await projectExists(projectId))) return { error: "Project not found." };
+  const link = String(formData.get("link") ?? "").trim();
+  const ref = confluencePageRef(link);
+  if (!ref) return { error: "Paste a Confluence page link, like https://yoursite.atlassian.net/wiki/spaces/DOCS/pages/123456/Page+title" };
+  const includeChildren = formData.get("includeChildren") === "on";
+  if ("pageId" in ref) {
+    const [same] = await db
+      .select({ id: sources.id })
+      .from(sources)
+      .where(and(eq(sources.projectId, projectId), eq(sources.uri, confluencePageUrl(ref.origin, ref.pageId)), inArray(sources.status, ["queued", "ingesting", "ready"])));
+    if (same && !includeChildren) return { error: "This page is already a source. Use “Check Confluence for updates” to pick up edits." };
+  }
+  try {
+    await queueConfluence(projectId, includeChildren ? "Add Confluence page and child pages" : "Add Confluence page", { link, includeChildren }, user.email);
+  } catch (e) {
+    revalidate(projectId);
+    return { error: (e as Error).message };
+  }
+  revalidate(projectId);
+  return { ok: includeChildren ? "Reading the page and its child pages from Confluence now." : "Reading the page from Confluence now." };
+}
+
+/** Re-check every Confluence page in the project; changed and new child pages are read again and a new plan is drafted. */
+export async function checkConfluence(formData: FormData) {
+  const user = await requireUser();
+  const projectId = Uuid.parse(formData.get("projectId"));
+  try {
+    await queueConfluence(projectId, "Check Confluence for updates", { sync: true }, user.email);
+  } catch {
+    // The failed run shows in Agent runs.
+  }
+  revalidate(projectId);
 }
 
 const TRANSCRIPT_TYPES: Record<string, SourceType> = { vtt: "transcript", srt: "transcript", txt: "transcript" };

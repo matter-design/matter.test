@@ -120,10 +120,12 @@ pnpm import-run ./artefacts/shop.example.com-2026-11-06T03-00-00-000Z.json --cli
 
 Each project has **Test assets** and a **Review inbox** in the sidebar.
 
-1. **Add a source** on Test assets: a PDF, Word (.docx) or Markdown brief or requirements document, a transcript file (.vtt, .srt, .txt), or a **Loom share link**. Files are stored under `artefacts/sources/<project>/`; uploading the same file twice is refused, and a changed file with the same name becomes version 2 (the old version's requirements drop out of planning).
+1. **Add a source** on Test assets: a PDF, Word (.docx) or Markdown brief or requirements document, a transcript file (.vtt, .srt, .txt), a **Loom share link**, or a **Confluence page link**. Files are stored under `artefacts/sources/<project>/`; uploading the same file twice is refused, and a changed file with the same name becomes version 2 (the old version's requirements drop out of planning).
 2. The worker's `ingest` job reads it, splits it into passages (by heading for documents, about 2-minute windows for videos), embeds each passage, and asks Claude for the **requirements** (each citing the passages it came from) and **questions for the client** where the source is vague or contradicts itself.
 3. A `plan` job then drafts a **test plan** (scope, out of scope, risk-ranked areas), **scenarios** and **test cases** with steps and expected results, again citing passages. Citations are checked against what Claude was shown; anything that can't be traced is dropped. Each new draft supersedes the previous draft; approved test cases stay approved.
 4. In the **Review inbox**, approve, reject or edit (title, preconditions, test data, steps) each test case, requirement and the plan. **Traced to source** quotes the passage and links to it in the source view (or to that moment in the Loom video). Rejecting requirements and pressing **Draft the plan again** re-plans without them.
+
+**Confluence.** Paste a page link (any of the usual shapes, including `/wiki/x/…` short links). Tick **Include child pages** to read the pages under it too, through folders, up to 50; each page becomes its own source, so an edit to one page only re-reads that page. The worker reads pages with one Atlassian account (`CONFLUENCE_BASE_URL`, `CONFLUENCE_EMAIL`, `CONFLUENCE_API_TOKEN` in `.env`, falling back to the `JIRA_*` values), so that account needs access to the space. **Check Confluence for updates** compares each page's Confluence version: unchanged pages are skipped, a changed page becomes a new version (its old requirements drop out of planning), new child pages are added, and one new plan is drafted. Nothing re-reads on its own, so Claude only runs when someone asks.
 
 **Loom.** Loom has no official transcript API. For videos shared with "anyone with the link", the worker reads the transcript the share page uses (an undocumented Loom endpoint that may change). For workspace-only videos, or if that fails, the source shows **Needs a transcript**: download it in Loom (⋯ › Download › Transcript) and attach it there.
 
@@ -131,7 +133,7 @@ Each project has **Test assets** and a **Review inbox** in the sidebar.
 
 **Embeddings** run locally (`EMBEDDINGS=local`, the default) with `mixedbread-ai/mxbai-embed-large-v1` (1024 dimensions) through transformers.js: no key, and nothing leaves the machine for this step. The model (~340 MB) downloads to `.cache/models` on first use; `pnpm --filter @mattertest/agent fetch-model` does it up front. `EMBEDDINGS=off` stores passages without vectors (extraction still works; Claude reads the whole source).
 
-Scanned PDFs (images of text) aren't read yet, and sources other than files and Loom (Jira epics, Confluence, Figma) come later.
+Scanned PDFs (images of text) aren't read yet, and sources other than files, Loom and Confluence (Jira epics, Figma) come later.
 
 ## Layout
 
@@ -145,7 +147,7 @@ packages/
   checks/     deterministic check engine (Playwright, axe-core, cheerio, Lighthouse)
     src/packs/  platform packs (BigCommerce, Shopify, WordPress)
   report/     client PDF report (HTML template printed with Chromium)
-  agent/      doc ingestion: parsing (PDF, DOCX, Markdown, transcripts, Loom), chunking, local embeddings,
+  agent/      doc ingestion: parsing (PDF, DOCX, Markdown, transcripts, Loom, Confluence), chunking, local embeddings,
               Claude extraction/planning prompts and schemas, citation checks
 ```
 

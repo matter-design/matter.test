@@ -2,10 +2,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { RunStatus } from "@/components/badges";
-import { agentRuns, currentPlan, liveRequirements, passages, projectQuestions, projectSources, sourceTitle, type SourceRow } from "@/lib/assets";
+import { agentRuns, currentPlan, liveRequirements, passages, projectQuestions, projectSources, sourceTitle, type AgentRun, type SourceRow } from "@/lib/assets";
 import { latestSiteCheck, projectWithClient } from "@/lib/queries";
 import { KIND_LABEL, REVIEW_LABEL, SOURCE_STATUS_LABEL, SOURCE_TYPE_LABEL, clock, duration, plural, timeAgo, usd } from "@/lib/format";
-import { regeneratePlan, retrySource, updateQuestion } from "./actions";
+import { checkConfluence, regeneratePlan, retrySource, updateQuestion } from "./actions";
 import { AddSource, AttachTranscript, AutoRefresh } from "./SourceForms";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +18,8 @@ function sourceDetail(s: SourceRow): string {
   return [
     SOURCE_TYPE_LABEL[s.type] ?? s.type,
     s.version > 1 ? `version ${s.version}` : null,
+    m.confluence && m.confluence.pageId !== m.confluence.rootPageId ? "child page" : null,
+    m.confluence?.includeChildren ? "with child pages" : null,
     m.pages ? plural(m.pages, "page") : null,
     m.durationSec ? clock(m.durationSec) : null,
     m.owner ? `by ${m.owner}` : null,
@@ -26,6 +28,26 @@ function sourceDetail(s: SourceRow): string {
   ]
     .filter(Boolean)
     .join(" · ");
+}
+
+/** The last Confluence add or update check: what it found, or why it failed. */
+function ConfluenceStatus({ run }: { run: AgentRun }) {
+  const s = (run.summary ?? {}) as { added?: number; changed?: number; unchanged?: number; failed?: number; error?: string; problems?: string[] };
+  if (run.status === "queued" || run.status === "running") return null;
+  const when = timeAgo(run.finishedAt ?? run.createdAt);
+  if (run.status === "failed") return <span className="small" style={{ color: "var(--crit)" }}>{run.title} failed {when}: {s.error ?? "unknown error"}</span>;
+  const parts = [
+    s.added ? `${plural(s.added, "new page")}` : null,
+    s.changed ? `${plural(s.changed, "page")} changed` : null,
+    s.unchanged ? `${s.unchanged} unchanged` : null,
+    s.failed ? `${s.failed} couldn't be read` : null,
+  ].filter(Boolean);
+  return (
+    <span className="small muted">
+      Confluence checked {when}: {parts.length ? parts.join(", ") : "no pages found"}.
+      {s.problems?.map((p, i) => <span key={i} style={{ display: "block", color: "var(--high)" }}>{p}</span>)}
+    </span>
+  );
 }
 
 export default async function TestAssets({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ tab?: string }> }) {
@@ -41,6 +63,8 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
   const cases = tree?.scenarios.flatMap((s) => s.cases.map((c) => ({ ...c, scenario: s }))) ?? [];
   const openQuestions = questions.filter((q) => q.status === "open");
   const busy = runsList.some((r) => r.status === "queued" || r.status === "running");
+  const hasConfluence = srcs.some((s) => s.type === "confluence");
+  const lastConfluence = runsList.find((r) => r.confluence);
   const lastPlanRun = runsList.find((r) => r.kind === "plan");
   const inFlight = runsList.filter((r) => r.status === "queued" || r.status === "running");
   const spent = runsList.reduce((n, r) => n + r.costUsd, 0);
@@ -88,7 +112,7 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
         <aside className="assets-side">
           <section className="panel" aria-labelledby="sources-h">
             <h2 id="sources-h" style={{ fontSize: 15 }}>Sources</h2>
-            {!srcs.length && <p className="muted small" style={{ margin: 0 }}>Nothing yet. Add the client&apos;s brief, requirements document or a Loom walkthrough.</p>}
+            {!srcs.length && <p className="muted small" style={{ margin: 0 }}>Nothing yet. Add the client&apos;s brief, requirements document, a Confluence page or a Loom walkthrough.</p>}
             {srcs.map((s) => (
               <div key={s.id} className="source-row">
                 <div className="row">
@@ -97,6 +121,7 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
                 </div>
                 <span className="small muted">{sourceDetail(s)}</span>
                 {s.type === "loom" && s.uri && <a className="small" href={s.uri} target="_blank" rel="noreferrer">Open in Loom</a>}
+                {s.type === "confluence" && s.uri && <a className="small" href={s.meta.confluence?.webUrl ?? s.uri} target="_blank" rel="noreferrer">Open in Confluence</a>}
                 {s.error && <span className="small" style={{ color: s.status === "failed" ? "var(--crit)" : "var(--high)" }}>{s.error}</span>}
                 {s.status === "needs-transcript" && <AttachTranscript sourceId={s.id} />}
                 {s.status === "failed" && (
@@ -107,6 +132,17 @@ export default async function TestAssets({ params, searchParams }: { params: Pro
                 )}
               </div>
             ))}
+            {(hasConfluence || lastConfluence) && (
+              <div className="stack" style={{ gap: 6, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+                {lastConfluence && <ConfluenceStatus run={lastConfluence} />}
+                {hasConfluence && (
+                  <form action={checkConfluence}>
+                    <input type="hidden" name="projectId" value={id} />
+                    <button type="submit" className="btn btn-outline btn-sm" disabled={busy}>Check Confluence for updates</button>
+                  </form>
+                )}
+              </div>
+            )}
             <AddSource projectId={id} />
           </section>
 

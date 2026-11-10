@@ -23,6 +23,7 @@ function Trace({ items, empty }: { items: Passage[]; empty: string }) {
           <span className="quote-cite">
             <Link href={p.href}>{passageLabel(p)}</Link>
             {p.videoHref && <a href={p.videoHref} target="_blank" rel="noreferrer">Watch at {clock(p.locator.startSec ?? 0)}</a>}
+            {p.pageHref && <a href={p.pageHref} target="_blank" rel="noreferrer">Open in Confluence</a>}
           </span>
         </div>
       ))}

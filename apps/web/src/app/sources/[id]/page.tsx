@@ -40,12 +40,13 @@ export default async function SourceView({ params, searchParams }: { params: Pro
             <span className={`pill status-${source.status}`}>{SOURCE_STATUS_LABEL[source.status] ?? source.status}</span>
           </div>
           <span className="muted">
-            {[SOURCE_TYPE_LABEL[source.type] ?? source.type, source.version > 1 ? `version ${source.version}` : null, m.pages ? plural(m.pages, "page") : null, m.durationSec ? clock(m.durationSec) : null, m.owner ? `by ${m.owner}` : null, plural(chunks.length, "passage"), `added ${dateTime(source.createdAt)}${source.createdBy ? ` by ${source.createdBy}` : ""}`].filter(Boolean).join(" · ")}
+            {[SOURCE_TYPE_LABEL[source.type] ?? source.type, source.version > 1 ? `version ${source.version}` : null, m.confluence ? `Confluence version ${m.confluence.version}` : null, m.pages ? plural(m.pages, "page") : null, m.durationSec ? clock(m.durationSec) : null, m.owner ? `by ${m.owner}` : null, plural(chunks.length, "passage"), `added ${dateTime(source.createdAt)}${source.createdBy ? ` by ${source.createdBy}` : ""}`].filter(Boolean).join(" · ")}
           </span>
         </div>
         <div className="row">
-          {source.uri && <a className="btn btn-outline" href={source.uri} target="_blank" rel="noreferrer">Open in Loom</a>}
-          {source.fileUri && <a className="btn btn-outline" href={`/sources/${source.id}/file`}>Download {source.type === "loom" ? "transcript" : "original"}</a>}
+          {source.type === "loom" && source.uri && <a className="btn btn-outline" href={source.uri} target="_blank" rel="noreferrer">Open in Loom</a>}
+          {source.type === "confluence" && source.uri && <a className="btn btn-outline" href={m.confluence?.webUrl ?? source.uri} target="_blank" rel="noreferrer">Open in Confluence</a>}
+          {source.fileUri && <a className="btn btn-outline" href={`/sources/${source.id}/file`}>Download {source.type === "loom" ? "transcript" : source.type === "confluence" ? "page as read (HTML)" : "original"}</a>}
         </div>
       </div>
 

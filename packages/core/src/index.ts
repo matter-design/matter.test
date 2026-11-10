@@ -114,7 +114,7 @@ export const QUEUES = {
 } as const;
 
 /** Kinds of client material a project can ingest. */
-export const SOURCE_TYPES = ["pdf", "docx", "md", "transcript", "loom"] as const;
+export const SOURCE_TYPES = ["pdf", "docx", "md", "transcript", "loom", "confluence"] as const;
 export type SourceType = (typeof SOURCE_TYPES)[number];
 
 /** Where an ingested source is in its life. */
@@ -159,6 +159,41 @@ export function loomLinkAt(link: string, sec: number | undefined): string {
   return u.toString();
 }
 
+/** Most pages read when a Confluence page is added with its child pages. */
+export const CONFLUENCE_MAX_PAGES = 50;
+
+export type ConfluencePageRef = { origin: string; pageId: string } | { origin: string; tiny: string };
+
+/**
+ * The page a Confluence Cloud link points at, or null if it isn't a page link. Accepts
+ * /wiki/spaces/KEY/pages/123/Title, /wiki/spaces/KEY/pages/edit-v2/123, /wiki/pages/viewpage.action?pageId=123
+ * and short links (/wiki/x/AbCd), which the worker resolves.
+ */
+export function confluencePageRef(link: string): ConfluencePageRef | null {
+  let u: URL;
+  try {
+    u = new URL(link.trim());
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  const path = u.pathname.replace(/\/+$/, "");
+  const page = path.match(/^\/wiki\/spaces\/[^/]+\/pages\/(?:edit-v2\/|edit\/)?(\d+)(?:\/|$)/);
+  if (page) return { origin: u.origin, pageId: page[1]! };
+  if (/^\/wiki\/pages\/(?:viewpage|editpage)\.action$/.test(path)) {
+    const id = u.searchParams.get("pageId");
+    return id && /^\d+$/.test(id) ? { origin: u.origin, pageId: id } : null;
+  }
+  const tiny = path.match(/^\/wiki\/x\/([A-Za-z0-9_-]+)$/);
+  if (tiny) return { origin: u.origin, tiny: tiny[1]! };
+  return null;
+}
+
+/** The link stored for a Confluence page: stable across title changes and moves between spaces. */
+export function confluencePageUrl(origin: string, pageId: string): string {
+  return `${origin}/wiki/pages/viewpage.action?pageId=${pageId}`;
+}
+
 /** Where in its source a chunk sits: a page for documents, a time range (seconds) for videos and transcripts. */
 export type ChunkLocator = { page?: number; startSec?: number; endSec?: number };
 
@@ -171,6 +206,21 @@ export const IngestJob = z.object({
   thenPlan: z.boolean().default(true),
 });
 export type IngestJob = z.infer<typeof IngestJob>;
+
+/**
+ * Job: read a Confluence page (and optionally its child pages) into sources, or with `sync` re-check every
+ * Confluence page already in the project. New and changed pages are ingested; one plan run follows.
+ */
+export const ConfluenceJob = z.object({
+  taskId: z.string().uuid(),
+  runId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  link: z.string().optional(),
+  includeChildren: z.boolean().default(false),
+  sync: z.boolean().default(false),
+  requestedBy: z.string().optional(),
+});
+export type ConfluenceJob = z.infer<typeof ConfluenceJob>;
 
 /** Job: draft a test plan, scenarios and test cases from a project's requirements. */
 export const PlanJob = z.object({

@@ -75,23 +75,44 @@ export const environments = pgTable("environments", {
   createdAt: created(),
 });
 
+/** A Confluence page source: which page and version was read, and the page it was added through. */
+export type ConfluenceSourceMeta = {
+  pageId: string;
+  version: number;
+  webUrl: string;
+  /** The page the team added; equal to pageId unless this page was read as a child page. */
+  rootPageId: string;
+  /** On the added page only: whether its child pages are read too. */
+  includeChildren?: boolean;
+};
+
+export type SourceMeta = {
+  pages?: number;
+  durationSec?: number;
+  chunks?: number;
+  title?: string;
+  owner?: string;
+  transcriptFrom?: "loom" | "upload";
+  confluence?: ConfluenceSourceMeta;
+};
+
 export const sources = pgTable(
   "sources",
   {
     id: id(),
     projectId: uuid("project_id").notNull().references(() => projects.id),
-    type: text("type").notNull(), // pdf | docx | md | transcript | loom (later: confluence | jira-epic | figma | url)
+    type: text("type").notNull(), // SOURCE_TYPES: pdf | docx | md | transcript | loom | confluence (later: jira-epic | figma | url)
     name: text("name").notNull(),
-    /** The original link (Loom share URL); null for uploads. */
+    /** The original link (Loom share URL, Confluence page URL); null for uploads. */
     uri: text("uri"),
-    /** Stored file under the artefact folder: the upload, or a transcript attached to a Loom source. */
+    /** Stored file under the artefact folder: the upload, a transcript attached to a Loom source, or a Confluence page's HTML as read. */
     fileUri: text("file_uri"),
     contentHash: text("content_hash").notNull(),
     version: integer("version").notNull().default(1),
     status: text("status").notNull().default("queued"), // SOURCE_STATUSES
     error: text("error"),
-    /** Facts shown in the Sources list: pages, duration, chunk count, Loom title and owner. */
-    meta: jsonb("meta").$type<{ pages?: number; durationSec?: number; chunks?: number; title?: string; owner?: string; transcriptFrom?: "loom" | "upload" }>().notNull().default({}),
+    /** Facts shown in the Sources list: pages, duration, chunk count, Loom title and owner, Confluence page and version. */
+    meta: jsonb("meta").$type<SourceMeta>().notNull().default({}),
     createdBy: text("created_by"),
     createdAt: created(),
   },

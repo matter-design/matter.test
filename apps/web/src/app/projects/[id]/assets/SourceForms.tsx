@@ -2,7 +2,7 @@
 
 import { useActionState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { addLoomSource, attachTranscript, uploadSource, type FormState } from "./actions";
+import { addConfluencePage, addLoomSource, attachTranscript, uploadSource, type FormState } from "./actions";
 
 function Message({ state }: { state: FormState }) {
   if (state.error) return <p className="error" role="alert">{state.error}</p>;
@@ -10,14 +10,17 @@ function Message({ state }: { state: FormState }) {
   return null;
 }
 
-/** Upload a document or transcript, or add a Loom link. */
+/** Upload a document or transcript, or add a Loom link or a Confluence page. */
 export function AddSource({ projectId }: { projectId: string }) {
   const [up, upload, uploading] = useActionState(uploadSource, {});
   const [loom, addLoom, adding] = useActionState(addLoomSource, {});
+  const [conf, addConf, reading] = useActionState(addConfluencePage, {});
   const fileForm = useRef<HTMLFormElement>(null);
   const loomForm = useRef<HTMLFormElement>(null);
+  const confForm = useRef<HTMLFormElement>(null);
   useEffect(() => void (up.ok && fileForm.current?.reset()), [up]);
   useEffect(() => void (loom.ok && loomForm.current?.reset()), [loom]);
+  useEffect(() => void (conf.ok && confForm.current?.reset()), [conf]);
 
   return (
     <div className="dropzone">
@@ -40,6 +43,20 @@ export function AddSource({ projectId }: { projectId: string }) {
         </div>
         <button type="submit" className="btn btn-outline btn-sm" disabled={adding} style={{ alignSelf: "flex-start" }}>{adding ? "Adding…" : "Add video"}</button>
         <Message state={loom} />
+      </form>
+      <form ref={confForm} action={addConf} className="stack" style={{ paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+        <input type="hidden" name="projectId" value={projectId} />
+        <div className="field">
+          <label htmlFor="confluence-link">Or a Confluence page</label>
+          <span className="hint small">Page link. It&apos;s read with the team&apos;s Confluence account, so that account needs access to the space.</span>
+          <input id="confluence-link" name="link" type="url" className="input" required placeholder="https://yoursite.atlassian.net/wiki/spaces/…/pages/…" />
+        </div>
+        <label className="row small" style={{ gap: 8, alignItems: "center", cursor: "pointer" }}>
+          <input type="checkbox" name="includeChildren" style={{ width: 18, height: 18, margin: 0 }} />
+          Include child pages (up to 50, each read as its own source)
+        </label>
+        <button type="submit" className="btn btn-outline btn-sm" disabled={reading} style={{ alignSelf: "flex-start" }}>{reading ? "Adding…" : "Add page"}</button>
+        <Message state={conf} />
       </form>
     </div>
   );

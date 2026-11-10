@@ -87,7 +87,7 @@ export const SOURCE_STATUS_LABEL: Record<string, string> = {
   superseded: "Older version",
 };
 
-export const SOURCE_TYPE_LABEL: Record<string, string> = { pdf: "PDF", docx: "Word", md: "Markdown", transcript: "Transcript", loom: "Loom video" };
+export const SOURCE_TYPE_LABEL: Record<string, string> = { pdf: "PDF", docx: "Word", md: "Markdown", transcript: "Transcript", loom: "Loom video", confluence: "Confluence page" };
 
 export const KIND_LABEL: Record<string, string> = { happy: "Happy", negative: "Negative", edge: "Edge" };
 

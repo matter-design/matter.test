@@ -1,14 +1,14 @@
 import type { SourceType } from "@mattertest/core";
 import { chunkBlocks, chunkCues, type Chunk } from "./chunk";
 import { LoomTranscriptUnavailable, fetchLoomTranscript, type LoomVideo } from "./loom";
-import { parseDocx, parseMarkdown, parsePdf, parseTranscript } from "./parse";
+import { parseDocx, parseHtml, parseMarkdown, parsePdf, parseTranscript } from "./parse";
 import { EXTRACT_SYSTEM, PLAN_SYSTEM, extractUser, planUser, type Passage, type PlanRequirement } from "./prompts";
 import { Extraction, PlanDraft, resolveExtraction, resolvePlan, type ChunkRefs } from "./schemas";
 import type { StructuredModel } from "./claude";
 
 export type ReadInput = {
   type: SourceType;
-  /** The uploaded file, or for a Loom source a transcript the team attached. */
+  /** The uploaded file; for a Loom source a transcript the team attached; for a Confluence page its saved HTML. */
   file?: Buffer;
   /** Loom share link. */
   link?: string | null;
@@ -51,6 +51,9 @@ export async function readSource(input: ReadInput, f: typeof fetch = fetch): Pro
       break;
     case "md":
       chunks = chunkBlocks(parseMarkdown(need(input.file).toString("utf8")));
+      break;
+    case "confluence":
+      chunks = chunkBlocks(parseHtml(need(input.file).toString("utf8")));
       break;
     case "transcript":
       chunks = chunkCues(parseTranscript(need(input.file).toString("utf8")));
